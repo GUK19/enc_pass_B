@@ -6,6 +6,8 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
+#include <utility>
 
 #define MAX_LOADSTRING 100
 
@@ -22,6 +24,14 @@ struct PasswordEntry
 };
 
 std::vector<PasswordEntry> g_entries;
+// Registry storage location
+
+// Registry storage location
+constexpr wchar_t REGISTRY_PATH[] =
+L"Software\\enc_pass_B\\PasswordManager";
+
+
+
 
 HWND g_nameEdit = nullptr;
 HWND g_passwordEdit = nullptr;
@@ -105,8 +115,169 @@ std::wstring ReadControlText(HWND control)
 
     return text;
 }
+// Convert UTF-16 code units to hexadecimal text.
+std::wstring EncodeHex(const std::wstring& source)
+{
+    const wchar_t* digits = L"0123456789ABCDEF";
+
+    std::wstring result;
+    result.reserve(source.size() * 4);
+
+    for (wchar_t ch : source)
+    {
+        unsigned int value =
+            static_cast<unsigned int>(
+                static_cast<uint16_t>(ch));
+
+        result.push_back(digits[(value >> 12) & 0xF]);
+        result.push_back(digits[(value >> 8) & 0xF]);
+        result.push_back(digits[(value >> 4) & 0xF]);
+        result.push_back(digits[value & 0xF]);
+    }
+
+    return result;
+}
+
+// Convert one hexadecimal character to a number.
+int HexDigit(wchar_t c)
+{
+    if (c >= L'0' && c <= L'9')
+        return c - L'0';
+
+    if (c >= L'A' && c <= L'F')
+        return c - L'A' + 10;
+
+    if (c >= L'a' && c <= L'f')
+        return c - L'a' + 10;
+
+    return -1;
+}
+
+// Convert hexadecimal text back to UTF-16 text.
+bool DecodeHex(
+    const std::wstring& source,
+    std::wstring& result)
+{
+    if (source.size() % 4 != 0)
+        return false;
+
+    std::wstring decoded;
+    decoded.reserve(source.size() / 4);
+
+    for (size_t i = 0; i < source.size(); i += 4)
+    {
+        unsigned int value = 0;
+
+        for (size_t j = 0; j < 4; ++j)
+        {
+            int digit = HexDigit(source[i + j]);
+
+            if (digit < 0)
+                return false;
+
+            value = (value << 4) | digit;
+        }
+
+        if (value == 0)
+            return false;
+
+        decoded.push_back(
+            static_cast<wchar_t>(value));
+    }
+
+    result = std::move(decoded);
+    return true;
+}
+
+// Standard CRC-32 over ASCII-format registry text.
+uint32_t CalculateCrc32(const std::wstring& ascii)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+
+    for (wchar_t c : ascii)
+    {
+        crc ^= static_cast<uint8_t>(c);
+
+        for (int i = 0; i < 8; ++i)
+        {
+            crc = (crc >> 1) ^
+                ((crc & 1u) ? 0xEDB88320u : 0u);
+        }
+    }
+
+    return ~crc;
+}
+
+// Format a 32-bit number as eight hex characters.
+std::wstring Hex8(uint32_t value)
+{
+    const wchar_t* digits = L"0123456789ABCDEF";
+    std::wstring result(8, L'0');
+
+    for (int i = 7; i >= 0; --i)
+    {
+        result[i] = digits[value & 0xF];
+        value >>= 4;
+    }
+
+    return result;
+}
 
 
+// Save one password entry as a separate REG_SZ value.
+bool SaveEntryToRegistry(
+    unsigned int number,
+    const std::wstring& name,
+    const std::wstring& password)
+{
+    // 1. Create the registry value name.
+    std::wstring valueName = std::to_wstring(number);
+
+    // 2. Encode the entry name and password as HEX.
+    std::wstring data =
+        std::to_wstring(number) + L"|" +
+        EncodeHex(name) + L"|" +
+        EncodeHex(password);
+
+    // 3. Append CRC-32.
+    data += L"#" + Hex8(CalculateCrc32(data));
+
+    // 4. Create or open the registry key.
+    HKEY key = nullptr;
+
+    LONG status = RegCreateKeyExW(
+        HKEY_CURRENT_USER,
+        REGISTRY_PATH,
+        0,
+        nullptr,
+        REG_OPTION_NON_VOLATILE,
+        KEY_SET_VALUE,
+        nullptr,
+        &key,
+        nullptr
+    );
+
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    // 5. Save the entry as REG_SZ.
+    DWORD byteCount = static_cast<DWORD>(
+        (data.size() + 1) * sizeof(wchar_t)
+        );
+
+    status = RegSetValueExW(
+        key,
+        valueName.c_str(),
+        0,
+        REG_SZ,
+        reinterpret_cast<const BYTE*>(data.c_str()),
+        byteCount
+    );
+
+    RegCloseKey(key);
+
+    return status == ERROR_SUCCESS;
+}
 
 
 // 이 코드 모듈에 포함된 함수의 선언을 전달합니다:
@@ -309,7 +480,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             L"Demo only - passwords are not encrypted or saved.",
             0, 0, 20, 449, 510, 20, 0
         );
-
+        // Registry save test
+        if (!SaveEntryToRegistry(1, L"test", L"abc"))
+        {
+            MessageBoxW(
+                hWnd,
+                L"레지스트리 저장에 실패했습니다.",
+                L"Error",
+                MB_OK | MB_ICONERROR
+            );
+        }
         return 0;
     }
     case WM_COMMAND:
