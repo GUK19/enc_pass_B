@@ -577,6 +577,82 @@ bool DeleteEntryFromRegistry(const PasswordEntry& entry)
     return status == ERROR_SUCCESS;
 }
 
+
+// Save master password setup status (0 or 1).
+bool SaveMasterPasswordEnabled(bool enabled)
+{
+    HKEY key = nullptr;
+
+    LONG status = RegCreateKeyExW(
+        HKEY_CURRENT_USER,
+        REGISTRY_PATH,
+        0,
+        nullptr,
+        REG_OPTION_NON_VOLATILE,
+        KEY_SET_VALUE,
+        nullptr,
+        &key,
+        nullptr
+    );
+
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    DWORD value = enabled ? 1 : 0;
+
+    status = RegSetValueExW(
+        key,
+        L"MasterPasswordEnabled",
+        0,
+        REG_DWORD,
+        reinterpret_cast<const BYTE*>(&value),
+        sizeof(value)
+    );
+
+    RegCloseKey(key);
+
+    return status == ERROR_SUCCESS;
+}
+
+// Read master password setup status.
+bool LoadMasterPasswordEnabled(bool& enabled)
+{
+    DWORD value = 0;
+    DWORD byteCount = sizeof(value);
+
+    LONG status = RegGetValueW(
+        HKEY_CURRENT_USER,
+        REGISTRY_PATH,
+        L"MasterPasswordEnabled",
+        RRF_RT_REG_DWORD,
+        nullptr,
+        &value,
+        &byteCount
+    );
+
+    // First launch: initialize the status to 0.
+    if (status == ERROR_FILE_NOT_FOUND)
+    {
+        if (!SaveMasterPasswordEnabled(false))
+            return false;
+
+        enabled = false;
+        return true;
+    }
+
+    if (status != ERROR_SUCCESS ||
+        byteCount != sizeof(value) ||
+        value > 1)
+    {
+        return false;
+    }
+
+    enabled = (value == 1);
+
+    return true;
+}
+
+
 // Refresh the password manager's visible list.
 void RefreshListBox()
 {
@@ -784,6 +860,36 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             ID_PM_MASTER
         );
         // ===== 마스터 암호 설정 버튼 추가 끝 =====
+
+        // ===== 마스터 암호 설정 상태 확인 시작 =====
+
+        bool masterEnabled = false;
+
+        if (!LoadMasterPasswordEnabled(masterEnabled))
+        {
+            MessageBoxW(
+                hWnd,
+                L"마스터 암호 설정 상태를 읽지 못했습니다.",
+                L"Error",
+                MB_OK | MB_ICONERROR
+            );
+
+            EnableWindow(
+                GetDlgItem(hWnd, ID_PM_MASTER),
+                FALSE
+            );
+        }
+        else
+        {
+            SetWindowTextW(
+                GetDlgItem(hWnd, ID_PM_MASTER),
+                masterEnabled
+                ? L"마스터 암호 변경"
+                : L"마스터 암호 설정"
+            );
+        }
+
+        // ===== 마스터 암호 설정 상태 확인 끝 =====
 
         g_listBox = CreateControl(
             hWnd, L"LISTBOX", L"",
@@ -1261,13 +1367,40 @@ LRESULT CALLBACK MasterWndProc(
                 return 0;
             }
 
+            // ===== 마스터 암호 설정 상태 저장 시작 =====
+
+            if (!SaveMasterPasswordEnabled(true))
+            {
+                MessageBoxW(
+                    hWnd,
+                    L"마스터 암호 설정 상태를 저장하지 못했습니다.",
+                    L"Error",
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            // Change the button label in the main window.
+            HWND owner = GetWindow(hWnd, GW_OWNER);
+
+            if (owner)
+            {
+                SetWindowTextW(
+                    GetDlgItem(owner, ID_PM_MASTER),
+                    L"마스터 암호 변경"
+                );
+            }
+
             MessageBoxW(
                 hWnd,
-                L"마스터 암호 입력 조건을 확인했습니다.\n"
-                L"아직 실제 암호 저장 기능은 구현되지 않았습니다.",
-                L"입력 확인",
+                L"마스터 암호 설정 상태를 1로 저장했습니다.\n"
+                L"마스터 암호 자체는 저장하지 않았습니다.",
+                L"설정 완료",
                 MB_OK | MB_ICONINFORMATION
             );
+
+            // ===== 마스터 암호 설정 상태 저장 끝 =====
 
             DestroyWindow(hWnd);
             return 0;
