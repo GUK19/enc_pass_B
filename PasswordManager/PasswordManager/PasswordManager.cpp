@@ -26,7 +26,12 @@ std::vector<PasswordEntry> g_entries;
 HWND g_nameEdit = nullptr;
 HWND g_passwordEdit = nullptr;
 HWND g_listBox = nullptr;
-
+// 마스터 암호용 추가 시작
+HWND g_masterWindow = nullptr;
+HWND g_masterInput = nullptr;
+HWND g_masterConfirm = nullptr;
+HWND g_masterOk = nullptr;
+// 마스터 암호용 추가 끝
 bool g_showPassword = false;
 
 // Control IDs
@@ -37,6 +42,15 @@ constexpr int ID_PM_ADD = 2004;
 constexpr int ID_PM_LOAD = 2005;
 constexpr int ID_PM_DELETE = 2006;
 constexpr int ID_PM_SHOW = 2007;
+//마스터 암호용 추가 시작
+constexpr int ID_PM_MASTER = 2008;
+
+constexpr int ID_MASTER_INPUT = 2101;
+constexpr int ID_MASTER_CONFIRM = 2102;
+constexpr int ID_MASTER_SHOW = 2103;
+constexpr int ID_MASTER_OK = 2104;
+constexpr int ID_MASTER_CANCEL = 2105;
+//마스터 암호용 추가 끝
 
 // Create a GUI control
 HWND CreateControl(
@@ -100,7 +114,13 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+//마스터 암호용 추가
+LRESULT CALLBACK MasterWndProc(
+    HWND, UINT, WPARAM, LPARAM
+);
 
+void ShowMasterPasswordWindow(HWND parent);
+//마스터 암호용 끝
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -184,7 +204,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
        szTitle,
        WS_OVERLAPPEDWINDOW,
        CW_USEDEFAULT, 0,
-       590, 470,
+       590, 540,
        nullptr, nullptr,
        hInstance, nullptr
    );
@@ -264,6 +284,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             0, 395, 95, 135, 32, ID_PM_SHOW
         );
 
+        // ===== 마스터 암호 설정 버튼 추가 시작 =====
+        CreateControl(
+            hWnd,
+            L"BUTTON",
+            L"마스터 암호 설정",
+            WS_TABSTOP | BS_PUSHBUTTON,
+            0,
+            20, 403, 175, 32,
+            ID_PM_MASTER
+        );
+        // ===== 마스터 암호 설정 버튼 추가 끝 =====
+
         g_listBox = CreateControl(
             hWnd, L"LISTBOX", L"",
             WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY,
@@ -275,21 +307,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             L"STATIC",
             L"Demo only - passwords are not encrypted or saved.",
-            0, 0, 20, 380, 510, 20, 0
+            0, 0, 20, 449, 510, 20, 0
         );
 
         return 0;
     }
     case WM_COMMAND:
+    {
+        int wmId = LOWORD(wParam);
+        // 메뉴 선택을 구문 분석합니다:
+        switch (wmId)
         {
-            int wmId = LOWORD(wParam);
-            // 메뉴 선택을 구문 분석합니다:
-            switch (wmId)
-            {// Add a password
-            case ID_PM_ADD:
-            {
-                std::wstring name = ReadControlText(g_nameEdit);
-                std::wstring password = ReadControlText(g_passwordEdit);
+            // ===== 마스터 암호 설정 버튼 이벤트 시작 =====
+        case ID_PM_MASTER:
+        {
+            ShowMasterPasswordWindow(hWnd);
+            break;
+        }
+        // ===== 마스터 암호 설정 버튼 이벤트 끝 =====
+
+        // Add a password
+        case ID_PM_ADD:
+        {
+            std::wstring name = ReadControlText(g_nameEdit);
+            std::wstring password = ReadControlText(g_passwordEdit);
 
                 if (name.empty() || password.empty())
                 {
@@ -437,4 +478,319 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     }
     return (INT_PTR)FALSE;
+}
+void ShowMasterPasswordWindow(HWND parent)
+{
+    // Prevent duplicate windows
+    if (g_masterWindow != nullptr)
+    {
+        SetForegroundWindow(g_masterWindow);
+        return;
+    }
+
+    const wchar_t CLASS_NAME[] =
+        L"MasterPasswordWindowClass";
+
+    static bool registered = false;
+
+    if (!registered)
+    {
+        WNDCLASSW wc = {};
+
+        wc.lpfnWndProc = MasterWndProc;
+        wc.hInstance = hInst;
+        wc.lpszClassName = CLASS_NAME;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground =
+            reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+
+        if (!RegisterClassW(&wc))
+        {
+            MessageBoxW(
+                parent,
+                L"창 클래스를 등록하지 못했습니다.",
+                L"Error",
+                MB_OK | MB_ICONERROR
+            );
+            return;
+        }
+
+        registered = true;
+    }
+
+    // Center the new window over the main window
+    RECT parentRect;
+    GetWindowRect(parent, &parentRect);
+
+    int width = 460;
+    int height = 350;
+
+    int x = parentRect.left +
+        ((parentRect.right - parentRect.left) - width) / 2;
+
+    int y = parentRect.top +
+        ((parentRect.bottom - parentRect.top) - height) / 2;
+
+    HWND window = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        CLASS_NAME,
+        L"암호 설정",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        x, y,
+        width, height,
+        parent,
+        nullptr,
+        hInst,
+        nullptr
+    );
+
+    if (!window)
+    {
+        MessageBoxW(
+            parent,
+            L"마스터 암호 설정 창을 생성하지 못했습니다.",
+            L"Error",
+            MB_OK | MB_ICONERROR
+        );
+        return;
+    }
+
+    g_masterWindow = window;
+
+    // Disable the main window while settings are open
+    EnableWindow(parent, FALSE);
+
+    ShowWindow(window, SW_SHOW);
+    UpdateWindow(window);
+
+    SetForegroundWindow(window);
+    SetFocus(g_masterInput);
+}
+LRESULT CALLBACK MasterWndProc(
+    HWND hWnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        CreateControl(
+            hWnd, L"STATIC",
+            L"암호 관리자에 사용할 마스터 암호를 입력하세요.",
+            0, 0, 20, 20, 410, 20, 0
+        );
+
+        CreateControl(
+            hWnd, L"STATIC",
+            L"충분한 보안을 위해 암호는 8자 이상이어야 합니다.",
+            0, 0, 20, 42, 410, 20, 0
+        );
+
+        CreateControl(
+            hWnd, L"STATIC", L"",
+            SS_ETCHEDHORZ, 0,
+            20, 70, 410, 2, 0
+        );
+
+        CreateControl(
+            hWnd, L"STATIC", L"암호 입력",
+            0, 0, 20, 88, 410, 20, 0
+        );
+
+        g_masterInput = CreateControl(
+            hWnd, L"EDIT", L"",
+            WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL,
+            WS_EX_CLIENTEDGE,
+            20, 110, 410, 28,
+            ID_MASTER_INPUT
+        );
+
+        CreateControl(
+            hWnd, L"STATIC", L"암호 확인",
+            0, 0, 20, 145, 410, 20, 0
+        );
+
+        g_masterConfirm = CreateControl(
+            hWnd, L"EDIT", L"",
+            WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL,
+            WS_EX_CLIENTEDGE,
+            20, 167, 410, 28,
+            ID_MASTER_CONFIRM
+        );
+
+        CreateControl(
+            hWnd, L"BUTTON", L"암호 보이기",
+            WS_TABSTOP | BS_AUTOCHECKBOX,
+            0,
+            20, 210, 150, 25,
+            ID_MASTER_SHOW
+        );
+
+        g_masterOk = CreateControl(
+            hWnd, L"BUTTON", L"확인",
+            WS_TABSTOP | BS_DEFPUSHBUTTON,
+            0,
+            265, 265, 75, 30,
+            ID_MASTER_OK
+        );
+
+        CreateControl(
+            hWnd, L"BUTTON", L"취소",
+            WS_TABSTOP | BS_PUSHBUTTON,
+            0,
+            350, 265, 80, 30,
+            ID_MASTER_CANCEL
+        );
+
+        // Initially disable OK
+        EnableWindow(g_masterOk, FALSE);
+
+        return 0;
+    }
+
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+        int notification = HIWORD(wParam);
+
+        switch (id)
+        {
+            // Validate both input fields
+        case ID_MASTER_INPUT:
+        case ID_MASTER_CONFIRM:
+        {
+            if (notification == EN_CHANGE)
+            {
+                std::wstring password =
+                    ReadControlText(g_masterInput);
+
+                std::wstring confirm =
+                    ReadControlText(g_masterConfirm);
+
+                bool valid =
+                    password.length() >= 8 &&
+                    password == confirm;
+
+                EnableWindow(
+                    g_masterOk,
+                    valid ? TRUE : FALSE
+                );
+            }
+
+            return 0;
+        }
+
+        // Toggle password visibility
+        case ID_MASTER_SHOW:
+        {
+            if (notification == BN_CLICKED)
+            {
+                bool show =
+                    SendMessageW(
+                        GetDlgItem(hWnd, ID_MASTER_SHOW),
+                        BM_GETCHECK, 0, 0
+                    ) == BST_CHECKED;
+
+                SendMessageW(
+                    g_masterInput,
+                    EM_SETPASSWORDCHAR,
+                    show ? 0 : L'*',
+                    0
+                );
+
+                SendMessageW(
+                    g_masterConfirm,
+                    EM_SETPASSWORDCHAR,
+                    show ? 0 : L'*',
+                    0
+                );
+
+                InvalidateRect(
+                    g_masterInput, nullptr, TRUE
+                );
+
+                InvalidateRect(
+                    g_masterConfirm, nullptr, TRUE
+                );
+            }
+
+            return 0;
+        }
+
+        // Confirm password
+        case ID_MASTER_OK:
+        {
+            std::wstring password =
+                ReadControlText(g_masterInput);
+
+            std::wstring confirm =
+                ReadControlText(g_masterConfirm);
+
+            if (password.length() < 8 ||
+                password != confirm)
+            {
+                MessageBoxW(
+                    hWnd,
+                    L"암호는 8자 이상이며 두 입력값이 일치해야 합니다.",
+                    L"경고",
+                    MB_OK | MB_ICONWARNING
+                );
+                return 0;
+            }
+
+            MessageBoxW(
+                hWnd,
+                L"마스터 암호 입력 조건을 확인했습니다.\n"
+                L"아직 실제 암호 저장 기능은 구현되지 않았습니다.",
+                L"입력 확인",
+                MB_OK | MB_ICONINFORMATION
+            );
+
+            DestroyWindow(hWnd);
+            return 0;
+        }
+
+        // Cancel
+        case ID_MASTER_CANCEL:
+        {
+            DestroyWindow(hWnd);
+            return 0;
+        }
+        }
+
+        break;
+    }
+
+    case WM_CLOSE:
+    {
+        DestroyWindow(hWnd);
+        return 0;
+    }
+
+    case WM_DESTROY:
+    {
+        HWND owner = GetWindow(hWnd, GW_OWNER);
+
+        g_masterWindow = nullptr;
+        g_masterInput = nullptr;
+        g_masterConfirm = nullptr;
+        g_masterOk = nullptr;
+
+        if (owner)
+        {
+            EnableWindow(owner, TRUE);
+            SetForegroundWindow(owner);
+            SetActiveWindow(owner);
+        }
+
+        return 0;
+    }
+    }
+
+    return DefWindowProcW(
+        hWnd, message, wParam, lParam
+    );
 }
