@@ -8,7 +8,8 @@
 #include <vector>
 #include <cstdint>
 #include <utility>
-
+#include <algorithm>
+#include <limits>
 #define MAX_LOADSTRING 100
 
 // 전역 변수:
@@ -19,21 +20,20 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // 기본 창 클래스 이름�
 
 struct PasswordEntry
 {
+    unsigned int id;
     std::wstring name;
     std::wstring password;
 };
 
 std::vector<PasswordEntry> g_entries;
-// Registry storage location
+unsigned int g_nextId = 1;
 
 // Registry storage location
 constexpr wchar_t REGISTRY_PATH[] =
 L"Software\\enc_pass_B\\PasswordManager";
 
-
-
-
 HWND g_nameEdit = nullptr;
+
 HWND g_passwordEdit = nullptr;
 HWND g_listBox = nullptr;
 // 마스터 암호용 추가 시작
@@ -225,24 +225,25 @@ std::wstring Hex8(uint32_t value)
 
 
 // Save one password entry as a separate REG_SZ value.
+// Save one password entry as a separate REG_SZ value.
 bool SaveEntryToRegistry(
     unsigned int number,
     const std::wstring& name,
     const std::wstring& password)
 {
-    // 1. Create the registry value name.
-    std::wstring valueName = std::to_wstring(number);
+    // Registry value name: number_name
+    std::wstring valueName =
+        std::to_wstring(number) + L"_" + name;
 
-    // 2. Encode the entry name and password as HEX.
+    // Registry data: number + name HEX + password HEX
     std::wstring data =
-        std::to_wstring(number) + L"|" +
-        EncodeHex(name) + L"|" +
+        std::to_wstring(number) +
+        EncodeHex(name) +
         EncodeHex(password);
 
-    // 3. Append CRC-32.
+    // Append CRC-32.
     data += L"#" + Hex8(CalculateCrc32(data));
 
-    // 4. Create or open the registry key.
     HKEY key = nullptr;
 
     LONG status = RegCreateKeyExW(
@@ -260,7 +261,6 @@ bool SaveEntryToRegistry(
     if (status != ERROR_SUCCESS)
         return false;
 
-    // 5. Save the entry as REG_SZ.
     DWORD byteCount = static_cast<DWORD>(
         (data.size() + 1) * sizeof(wchar_t)
         );
@@ -279,6 +279,324 @@ bool SaveEntryToRegistry(
     return status == ERROR_SUCCESS;
 }
 
+
+bool ParseEntryNumber(
+    const std::wstring& text,
+    unsigned int& number)
+{
+    if (text.empty())
+        return false;
+
+    unsigned int result = 0;
+    const unsigned int maximum =
+        (std::numeric_limits<unsigned int>::max)();
+
+    for (wchar_t c : text)
+    {
+        if (c < L'0' || c > L'9')
+            return false;
+
+        unsigned int digit = c - L'0';
+
+        if (result > (maximum - digit) / 10)
+            return false;
+
+        result = result * 10 + digit;
+    }
+
+    if (result == 0 ||
+        std::to_wstring(result) != text)
+        return false;
+
+    number = result;
+    return true;
+}
+
+// Load all password entries from the registry.
+bool LoadEntriesFromRegistry()
+{
+    HKEY key = nullptr;
+
+    LONG status = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        REGISTRY_PATH,
+        0,
+        KEY_READ,
+        &key
+    );
+
+    // The registry key may not exist on first launch.
+    if (status == ERROR_FILE_NOT_FOUND)
+    {
+        g_entries.clear();
+        g_nextId = 1;
+        return true;
+    }
+
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    DWORD maxNameLength = 0;
+
+    status = RegQueryInfoKeyW(
+        key,
+        nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr,
+        nullptr,
+        &maxNameLength,
+        nullptr, nullptr, nullptr
+    );
+
+    if (status != ERROR_SUCCESS)
+    {
+        RegCloseKey(key);
+        return false;
+    }
+
+    std::vector<wchar_t> nameBuffer(
+        static_cast<size_t>(maxNameLength) + 2
+    );
+
+    std::vector<PasswordEntry> loaded;
+    unsigned int largestId = 0;
+    bool success = true;
+
+    for (DWORD i = 0; ; ++i)
+    {
+        DWORD nameLength =
+            static_cast<DWORD>(nameBuffer.size());
+
+        status = RegEnumValueW(
+            key,
+            i,
+            nameBuffer.data(),
+            &nameLength,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr
+        );
+
+        if (status == ERROR_NO_MORE_ITEMS)
+            break;
+
+        if (status != ERROR_SUCCESS)
+        {
+            success = false;
+            break;
+        }
+
+        std::wstring valueName(
+            nameBuffer.data(), nameLength
+        );
+
+        // New entry names follow number_name.
+        // Ignore the earlier test value named "1".
+        size_t separator = valueName.find(L'_');
+
+        if (separator == std::wstring::npos)
+            continue;
+
+        unsigned int id = 0;
+
+        if (!ParseEntryNumber(
+            valueName.substr(0, separator), id) ||
+            separator + 1 >= valueName.size())
+        {
+            success = false;
+            break;
+        }
+
+        std::wstring name =
+            valueName.substr(separator + 1);
+
+        // Find the required data buffer size.
+        // Find the required data buffer size.
+        DWORD bytes = 0;
+
+        status = RegGetValueW(
+            key,
+            nullptr,              // Subkey: 현재 열려 있는 키 사용
+            valueName.c_str(),    // 읽을 레지스트리 값 이름
+            RRF_RT_REG_SZ,
+            nullptr,
+            nullptr,
+            &bytes
+        );
+
+        if (status != ERROR_SUCCESS ||
+            bytes < sizeof(wchar_t) ||
+            bytes % sizeof(wchar_t) != 0)
+        {
+            success = false;
+            break;
+        }
+
+        std::vector<wchar_t> buffer(
+            bytes / sizeof(wchar_t) + 1, L'\0'
+        );
+
+        DWORD readBytes = static_cast<DWORD>(
+            buffer.size() * sizeof(wchar_t)
+            );
+
+        status = RegGetValueW(
+            key,
+            nullptr,              // Subkey: 현재 열려 있는 키 사용
+            valueName.c_str(),    // 읽을 레지스트리 값 이름
+            RRF_RT_REG_SZ,
+            nullptr,
+            buffer.data(),
+            &readBytes
+        );
+
+        if (status != ERROR_SUCCESS ||
+            readBytes < sizeof(wchar_t) ||
+            readBytes % sizeof(wchar_t) != 0 ||
+            buffer[readBytes / sizeof(wchar_t) - 1] != L'\0')
+        {
+            success = false;
+            break;
+        }
+
+        std::wstring stored(
+            buffer.data(),
+            readBytes / sizeof(wchar_t) - 1
+        );
+
+        if (stored.find(L'\0') != std::wstring::npos)
+        {
+            success = false;
+            break;
+        }
+
+        // Verify CRC-32.
+        size_t hashPos = stored.rfind(L'#');
+
+        if (hashPos == std::wstring::npos ||
+            stored.size() != hashPos + 9)
+        {
+            success = false;
+            break;
+        }
+
+        std::wstring payload = stored.substr(0, hashPos);
+
+        if (stored.substr(hashPos + 1) !=
+            Hex8(CalculateCrc32(payload)))
+        {
+            success = false;
+            break;
+        }
+
+        // Expected prefix: number + name HEX.
+        std::wstring prefix =
+            std::to_wstring(id) + EncodeHex(name);
+
+        if (payload.size() <= prefix.size() ||
+            payload.compare(0, prefix.size(), prefix) != 0)
+        {
+            success = false;
+            break;
+        }
+
+        // The remaining HEX represents the password.
+        std::wstring password;
+
+        if (!DecodeHex(
+            payload.substr(prefix.size()),
+            password) ||
+            password.empty())
+        {
+            success = false;
+            break;
+        }
+
+        loaded.push_back({ id, name, password });
+
+        if (id > largestId)
+            largestId = id;
+    }
+
+    RegCloseKey(key);
+
+    if (!success)
+        return false;
+
+    // Display in entry-number order.
+    std::sort(
+        loaded.begin(),
+        loaded.end(),
+        [](const PasswordEntry& a,
+            const PasswordEntry& b)
+        {
+            return a.id < b.id;
+        }
+    );
+
+    // Reject duplicate entry IDs.
+    for (size_t i = 1; i < loaded.size(); ++i)
+    {
+        if (loaded[i - 1].id == loaded[i].id)
+            return false;
+    }
+
+    g_entries = std::move(loaded);
+
+    // Zero means the unsigned ID range was exhausted.
+    g_nextId = largestId + 1;
+    return true;
+}
+
+// Delete one registry value, not the entire key.
+bool DeleteEntryFromRegistry(const PasswordEntry& entry)
+{
+    std::wstring valueName =
+        std::to_wstring(entry.id) + L"_" + entry.name;
+
+    HKEY key = nullptr;
+
+    LONG status = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        REGISTRY_PATH,
+        0,
+        KEY_SET_VALUE,
+        &key
+    );
+
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    status = RegDeleteValueW(
+        key,
+        valueName.c_str()
+    );
+
+    RegCloseKey(key);
+
+    return status == ERROR_SUCCESS;
+}
+
+// Refresh the password manager's visible list.
+void RefreshListBox()
+{
+    SendMessageW(
+        g_listBox,
+        LB_RESETCONTENT,
+        0, 0
+    );
+
+    for (const auto& entry : g_entries)
+    {
+        SendMessageW(
+            g_listBox,
+            LB_ADDSTRING,
+            0,
+            reinterpret_cast<LPARAM>(
+                entry.name.c_str())
+        );
+    }
+}
 
 // 이 코드 모듈에 포함된 함수의 선언을 전달합니다:
 ATOM                MyRegisterClass(HINSTANCE hInstance);
@@ -477,19 +795,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         CreateControl(
             hWnd,
             L"STATIC",
-            L"Demo only - passwords are not encrypted or saved.",
+            L"Demo - Registry HEX storage. Not encrypted.",
             0, 0, 20, 449, 510, 20, 0
         );
-        // Registry save test
-        if (!SaveEntryToRegistry(1, L"test", L"abc"))
+
+        // Load saved entries when the program starts.
+        if (!LoadEntriesFromRegistry())
         {
             MessageBoxW(
                 hWnd,
-                L"레지스트리 저장에 실패했습니다.",
+                L"레지스트리 목록을 읽지 못했습니다.\n"
+                L"기존 데이터를 보호하기 위해 Add와 Delete를 비활성화합니다.",
                 L"Error",
                 MB_OK | MB_ICONERROR
             );
+
+            EnableWindow(GetDlgItem(hWnd, ID_PM_ADD), FALSE);
+            EnableWindow(GetDlgItem(hWnd, ID_PM_DELETE), FALSE);
         }
+        else
+        {
+            RefreshListBox();
+        }
+
         return 0;
     }
     case WM_COMMAND:
@@ -523,23 +851,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     break;
                 }
 
-                LRESULT index = SendMessageW(
-                    g_listBox,
-                    LB_ADDSTRING,
-                    0,
-                    reinterpret_cast<LPARAM>(name.c_str())
-                );
-
-                if (index == LB_ERR || index == LB_ERRSPACE)
+                                // Save the new password in the registry.
+                if (g_nextId == 0 ||
+                    !SaveEntryToRegistry(g_nextId, name, password))
                 {
                     MessageBoxW(
-                        hWnd, L"Failed to add entry.",
-                        L"Error", MB_OK | MB_ICONERROR
+                        hWnd,
+                        L"레지스트리에 비밀번호를 저장하지 못했습니다.",
+                        L"Error",
+                        MB_OK | MB_ICONERROR
                     );
                     break;
                 }
 
-                g_entries.push_back({ name, password });
+                g_entries.push_back({
+                    g_nextId, name, password
+                });
+
+                ++g_nextId;
+
+                RefreshListBox();
 
                 SetWindowTextW(g_nameEdit, L"");
                 SetWindowTextW(g_passwordEdit, L"");
@@ -585,12 +916,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     break;
                 }
 
+                // Delete the selected entry from the registry.
+                if (!DeleteEntryFromRegistry(g_entries[index]))
+                {
+                    MessageBoxW(
+                        hWnd,
+                        L"레지스트리에서 비밀번호를 삭제하지 못했습니다.",
+                        L"Error",
+                        MB_OK | MB_ICONERROR
+                    );
+                    break;
+                }
+
                 g_entries.erase(g_entries.begin() + index);
 
-                SendMessageW(
-                    g_listBox, LB_DELETESTRING,
-                    static_cast<WPARAM>(index), 0
-                );
+                RefreshListBox();
 
                 SetWindowTextW(g_nameEdit, L"");
                 SetWindowTextW(g_passwordEdit, L"");
