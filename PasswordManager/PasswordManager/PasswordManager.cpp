@@ -12,10 +12,12 @@
 #include <algorithm>
 #include <limits>
 ///////////////////////////////////////////////////
+// 암호화에 필요한 고정 길이 바이트 배열과 Windows CNG 기능을 사용합니다.
 #include <array>
 #include <cstring>
 #include <bcrypt.h>
 
+// Windows CNG 함수를 사용할 수 있도록 bcrypt 라이브러리를 연결합니다.
 #pragma comment(lib, "bcrypt.lib")
 ///////////////////////////////////////////////////
 #define MAX_LOADSTRING 100
@@ -27,6 +29,9 @@ WCHAR szTitle[MAX_LOADSTRING];                  // 제목 표시줄 텍스트입
 WCHAR szWindowClass[MAX_LOADSTRING];            // 기본 창 클래스 이름입니다.
 
 
+// [데이터 모델] 암호 관리자에 표시/저장하는 비밀번호 항목 1개.
+// id=고유한 번호, name=암호 이름(NICK NAME, 예: "GitHub"), password=일반 비밀번호 원문.
+// 암호화 모드라도 g_entries에 보관되는 password는 "복호화된 평문"이다.
 struct PasswordEntry
 {
     unsigned int id;
@@ -34,22 +39,56 @@ struct PasswordEntry
     std::wstring password;
 };
 
-std::vector<PasswordEntry> g_entries;
-unsigned int g_nextId = 1;
 
-// Registry storage location
+std::vector<PasswordEntry> g_entries; // 실행 중 메모리에 보관하는 전체 항목 목록.
+
+unsigned int g_nextId = 1; // 다음에 저장할 항목 ID (예: 마지막 ID가 3면 다음은 4).
+
+
 constexpr wchar_t REGISTRY_PATH[] =
 L"Software\\enc_pass_B\\PasswordManager";
-///////////////////////////////////////////////////////////////////////////////////
+// 이 경로에는 다음과 같은 정보가 저장된다.
+// 1. 마스터 암호 설정 여부: MasterPasswordEnabled (0 또는 1)
+// 2. 암호화 키를 생성하는 데 필요한 정보(공개 가능해도 되는 정보): KdfSalt, KdfIterations, KdfVersion
+// 3. 입력한 마스터 암호가 올바른지 확인하는 데이터: MasterCheck
+//
+// 마스터 암호를 설정하기 전에는 사용자가 추가한 비밀번호도 이 경로에 저장된다.
+// 이때 비밀번호는 16진수 문자열로 변환되지만 암호화되지는 않는다.
+
+// Encrypted records live in a separate registry subkey.
+// [암호문 저장 위치] EncryptedEntries는 REGISTRY_PATH의 하위 키이다.
+// 암호화 모드의 각 비밀번호는 "ID_항목명"에 REG_BINARY로 저장된다.
+// 이 경로에 저장된 항목 데이터가 AES-GCM 암호문이다.
+
+
 constexpr wchar_t ENCRYPTED_PATH[] =
 L"Software\\enc_pass_B\\PasswordManager\\EncryptedEntries";
+// 마스터 암호를 설정하는 순간 비밀번호들은 AES-256-GCM으로 암호화하여 저장한다.
+//
+// 암호화된 비밀번호는 REGISTRY_PATH에 직접 저장하지 않고,
+// 그 하위 폴더 EncryptedEntries라는 별도의 공간을 만들어 저장한다.
+//
+// 예를 들어 GitHub라는 이름으로 비밀번호를 등록했다면,
+// EncryptedEntries 안에 "1_GitHub"라는 이름의 레지스트리 값이 생길 수 있다. -> update 필요
+// "1_GitHub"는 항목을 구분하기 위한 이름이고,
+// 그 값의 데이터 부분에는 암호화된 비밀번호가 저장된다.
+//
+//
+// 참고로 레지스트리의 REG_BINARY는 데이터를 바이트 단위로 저장하는 형식이다.
+// 이 프로그램은 암호화된 데이터를 REG_BINARY 형식으로 저장한다.
 
+
+// 암호화에 사용할 키, Salt, Nonce, 인증 태그의 길이를 바이트 단위로 정합니다.
+// 32바이트는 256비트이며, AES-256의 키 크기에 해당합니다.
 constexpr ULONG KEY_BYTES = 32;
 constexpr ULONG SALT_BYTES = 16;
 constexpr ULONG NONCE_BYTES = 12;
 constexpr ULONG TAG_BYTES = 16;
 
-constexpr DWORD KDF_ITERATIONS = 600000;
+constexpr DWORD KDF_ITERATIONS = 600000; // PBKDF2를 반복할 횟수입니다. 키를 처음 만들 때와 다시 만들 때 모두 사용합니다.
+
+
+
 constexpr UINT WM_PM_UNLOCK = WM_APP + 1;
 
 enum class MasterMode {
@@ -615,6 +654,8 @@ bool DeleteEntryFromRegistry(const PasswordEntry& entry)
 
 
 // Save master password setup status (0 or 1).
+// 마스터 암호 설정 여부를 MasterPasswordEnabled라는 이름으로 저장합니다.
+// enabled가 true이면 1, false이면 0을 기록합니다.
 bool SaveMasterPasswordEnabled(bool enabled)
 {
     HKEY key = nullptr;
@@ -692,17 +733,23 @@ void WipeText(std::wstring& text)
     text.clear();
 }
 
+// PBKDF2로 만든 32바이트 대칭키 배열을 0으로 덮습니다.
 void WipeKey(std::array<BYTE, KEY_BYTES>& key)
 {
     SecureZeroMemory(key.data(), key.size());
 }
 
+// Windows의 난수 생성 기능으로 size바이트를 만들어 output에 채웁니다.
+// Salt와 암호화할 때마다 새로 필요한 Nonce를 만드는 데 사용합니다.
 bool GetRandomBytes(BYTE* output, ULONG size)
 {
     return BCRYPT_SUCCESS(BCryptGenRandom(nullptr, output, size,
         BCRYPT_USE_SYSTEM_PREFERRED_RNG));
 }
 
+// 마스터 암호(password), Salt, 반복 횟수로 AES-256 키를 만듭니다.
+// PBKDF2-HMAC-SHA256을 사용하며 생성된 32바이트 키를 output에 기록합니다.
+// 같은 입력값을 넣으면 같은 키가 만들어집니다.
 bool DeriveAesKey(const std::wstring& password,
     const std::array<BYTE, SALT_BYTES>& salt, DWORD iterations,
     std::array<BYTE, KEY_BYTES>& output)
@@ -711,6 +758,7 @@ bool DeriveAesKey(const std::wstring& password,
         password.size() > (std::numeric_limits<ULONG>::max)() / sizeof(wchar_t))
         return false;
 
+    // HMAC-SHA256 알고리즘을 열고 PBKDF2로 키를 유도합니다.
     BCRYPT_ALG_HANDLE hash = nullptr;
     NTSTATUS st = BCryptOpenAlgorithmProvider(&hash, BCRYPT_SHA256_ALGORITHM,
         nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG);
@@ -728,6 +776,9 @@ bool DeriveAesKey(const std::wstring& password,
 
 // REG_BINARY, format [ 'P','M','0','1' | nonce(12) | tag(16) | ciphertext ]
 // The registry value name is authenticated as AAD (not encrypted).
+// AES-256-GCM 방식으로 바이트 데이터를 암호화하거나 복호화합니다.
+// encrypt가 true이면 암호화, false이면 복호화합니다.
+// valueName은 데이터의 이름을 인증에 포함하며, 복호화 시 인증이 실패하면 false입니다.
 bool AesGcmTransform(bool encrypt,
     const std::array<BYTE, KEY_BYTES>& rawKey,
     const std::wstring& valueName,
@@ -788,6 +839,13 @@ bool AesGcmTransform(bool encrypt,
     return ok;
 }
 
+
+
+// 
+// 비밀번호를 AES-256-GCM으로 암호화합니다.
+// 암호화할 때마다 새로운 무작위 값(Nonce)을 생성하며,
+// 암호문이 변조되지 않았는지 확인할 인증 태그도 함께 생성합니다.
+// 결과는 [식별표시(PM01), Nonce, 인증 태그, 암호문] 순서로 저장합니다.
 bool EncryptText(const std::array<BYTE, KEY_BYTES>& key,
     const std::wstring& valueName, const std::wstring& plain,
     std::vector<BYTE>& record)
