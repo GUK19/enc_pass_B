@@ -34,7 +34,8 @@ constexpr UINT WM_PM_UNLOCK = WM_APP + 1;
 enum class MasterMode {
     Setup,
     Unlock,
-    EncryptAdd
+    EncryptAdd,
+    DeleteMaster
 };
 
 MasterMode g_masterMode = MasterMode::Setup;
@@ -66,9 +67,11 @@ constexpr int ID_PM_LIST = 2003;
 constexpr int ID_PM_ADD = 2004;
 constexpr int ID_PM_LOAD = 2005;
 constexpr int ID_PM_DELETE = 2006;
+
 constexpr int ID_PM_SHOW = 2007;
 //마스터 암호용 추가 시작
 constexpr int ID_PM_MASTER = 2008;
+constexpr int ID_PM_MASTER_DELETE = 2009;
 
 constexpr int ID_MASTER_INPUT = 2101;
 constexpr int ID_MASTER_CONFIRM = 2102;
@@ -297,7 +300,9 @@ bool SaveEntryToRegistry(
 
 
 // Load all password entries from the registry.
-bool LoadEntriesFromRegistry()
+bool LoadEntriesFromRegistry(
+    std::vector<PasswordEntry>& entries = g_entries,
+    unsigned int& nextId = g_nextId)
 {
     HKEY key = nullptr;
 
@@ -312,8 +317,8 @@ bool LoadEntriesFromRegistry()
     // The registry key may not exist on first launch.
     if (status == ERROR_FILE_NOT_FOUND)
     {
-        g_entries.clear();
-        g_nextId = 1;
+        entries.clear();
+        nextId = 1;
         return true;
     }
 
@@ -525,10 +530,10 @@ bool LoadEntriesFromRegistry()
             return false;
     }
 
-    g_entries = std::move(loaded);
+    entries = std::move(loaded);
 
     // Zero means the unsigned ID range was exhausted.
-    g_nextId = largestId + 1;
+    nextId = largestId + 1;
     return true;
 }
 
@@ -560,9 +565,100 @@ bool DeleteEntryFromRegistry(const PasswordEntry& entry)
 
     return status == ERROR_SUCCESS;
 }
+///////////////////////////////////////////////////////////////////////////////////////////
+// 마스터 암호를 검증하고 암호화된 비밀번호들을
+// 기존 평문 저장 형식으로 되돌립니다.
+bool RemoveMasterPassword(
+    const std::wstring& master,
+    bool& cleanupOk)
+{
+    cleanupOk = true;
 
+    std::vector<PasswordEntry> restored;
+    unsigned int nextId = 1;
 
+    // 1. 마스터 암호 검증 및 모든 비밀번호 복호화.
+    if (!UnlockEncryptedStorage(master, restored, nextId))
+        return false;
 
+    bool ok = true;
+
+    // 2. 복호화된 비밀번호들을 기존 평문 형식으로 저장.
+    for (const auto& entry : restored)
+    {
+        if (!SaveEntryToRegistry(
+            entry.id,
+            entry.name,
+            entry.password))
+        {
+            ok = false;
+            break;
+        }
+    }
+
+    // 3. 저장된 평문 데이터를 다시 읽어 정상 저장 여부 확인.
+    std::vector<PasswordEntry> checked;
+    unsigned int checkedNextId = 1;
+
+    if (ok)
+    {
+        ok = LoadEntriesFromRegistry(checked, checkedNextId) &&
+            checked.size() == restored.size() &&
+            checkedNextId == nextId &&
+            std::equal(
+                restored.begin(),
+                restored.end(),
+                checked.begin(),
+                [](const PasswordEntry& a,
+                    const PasswordEntry& b)
+                {
+                    return a.id == b.id &&
+                        a.name == b.name &&
+                        a.password == b.password;
+                }
+            );
+    }
+
+    // 검증에 사용한 임시 비밀번호 제거.
+    for (auto& entry : checked)
+    {
+        WipeText(entry.password);
+    }
+
+    checked.clear();
+
+    // 4. 평문 저장이 확인되면 암호화 모드 해제.
+    if (ok)
+    {
+        ok = FinishMasterPasswordRemoval(cleanupOk);
+    }
+
+    // 실패하면 복원 과정에서 저장한 평문을 제거합니다.
+    // 기존 암호문과 KDF 정보는 유지됩니다.
+    if (!ok)
+    {
+        cleanupOk = DeleteLegacyPlaintextEntries(restored);
+
+        for (auto& entry : restored)
+        {
+            WipeText(entry.password);
+        }
+
+        return false;
+    }
+
+    // 5. 기존 메모리 목록을 복원된 목록으로 교체.
+    for (auto& entry : g_entries)
+    {
+        WipeText(entry.password);
+    }
+
+    g_entries = std::move(restored);
+    g_nextId = nextId;
+
+    return true;
+}
+//////////////////////////////////////////////////////////////////////////////////////////
 // Refresh the password manager's visible list.
 void RefreshListBox()
 {
@@ -774,7 +870,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         );
         // ===== 마스터 암호 설정 버튼 추가 끝 =====
 
+        // ===== 마스터 암호 삭제 버튼 추가 시작 =====
+        HWND masterDeleteButton = CreateControl(
+            hWnd,
+            L"BUTTON",
+            L"마스터 암호 삭제",
+            WS_TABSTOP | BS_PUSHBUTTON,
+            0,
+            205, 403, 175, 32,
+            ID_PM_MASTER_DELETE
+        );
 
+        // 마스터 암호 설정 및 인증 전에는 표시하지 않습니다.
+        ShowWindow(masterDeleteButton, SW_HIDE);
+        EnableWindow(masterDeleteButton, FALSE);
+        // ===== 마스터 암호 삭제 버튼 추가 끝 =====
 
         g_listBox = CreateControl(
             hWnd, L"LISTBOX", L"",
@@ -890,7 +1000,32 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             break;
         }
         // ===== 마스터 암호 설정 버튼 이벤트 끝 =====
+        // ===== 마스터 암호 삭제 버튼 이벤트 시작 =====
+        case ID_PM_MASTER_DELETE:
+        {
+            if (!g_storageReady || !g_masterEnabled)
+                break;
 
+            int answer = MessageBoxW(
+                hWnd,
+                L"마스터 암호를 삭제하면 저장된 모든 비밀번호가\n"
+                L"암호화되지 않은 상태로 레지스트리에 저장됩니다.\n\n"
+                L"계속하시겠습니까?",
+                L"마스터 암호 삭제",
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+            );
+
+            if (answer == IDYES)
+            {
+                ShowMasterPasswordWindow(
+                    hWnd,
+                    MasterMode::DeleteMaster
+                );
+            }
+
+            break;
+        }
+        // ===== 마스터 암호 삭제 버튼 이벤트 끝 =====
                 // Add a password
         case ID_PM_ADD:
         {
@@ -1181,6 +1316,8 @@ void ShowMasterPasswordWindow(
         ? L"마스터 암호 설정"
         : mode == MasterMode::Unlock
         ? L"암호 관리자 잠금 해제"
+        : mode == MasterMode::DeleteMaster
+        ? L"마스터 암호 삭제"
         : L"비밀번호 저장 인증",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         x, y,
@@ -1236,6 +1373,8 @@ LRESULT CALLBACK MasterWndProc(
             hWnd, L"STATIC",
             g_masterMode == MasterMode::Setup
             ? L"마스터 암호는 8자 이상이어야 합니다."
+            : g_masterMode == MasterMode::DeleteMaster
+            ? L"마스터 암호 삭제를 위해 기존 암호를 확인합니다."
             : L"입력한 마스터 암호는 저장하지 않습니다.",
             0, 0, 20, 42, 410, 20, 0
         );
@@ -1413,6 +1552,7 @@ LRESULT CALLBACK MasterWndProc(
 
             HWND owner = GetWindow(hWnd, GW_OWNER);
             bool success = false;
+            bool cleanupOk = true;
 
             // 1. Master password setup.
             if (g_masterMode == MasterMode::Setup)
@@ -1432,6 +1572,17 @@ LRESULT CALLBACK MasterWndProc(
                     SetWindowTextW(
                         GetDlgItem(owner, ID_PM_MASTER),
                         L"마스터 암호 변경"
+                    );
+
+                    // 마스터 암호 삭제 버튼 표시 및 활성화.
+                    ShowWindow(
+                        GetDlgItem(owner, ID_PM_MASTER_DELETE),
+                        SW_SHOW
+                    );
+
+                    EnableWindow(
+                        GetDlgItem(owner, ID_PM_MASTER_DELETE),
+                        TRUE
                     );
                 }
             }
@@ -1458,6 +1609,18 @@ LRESULT CALLBACK MasterWndProc(
                     EnableWindow(
                         GetDlgItem(owner, ID_PM_DELETE), TRUE
                     );
+                    ///////////////////////////////////////////////////////////////////
+                    // 마스터 암호 인증에 성공한 경우 삭제 버튼 표시.
+                    ShowWindow(
+                        GetDlgItem(owner, ID_PM_MASTER_DELETE),
+                        SW_SHOW
+                    );
+
+                    EnableWindow(
+                        GetDlgItem(owner, ID_PM_MASTER_DELETE),
+                        TRUE
+                    );
+                    /////////////////////////////////////////////////////////////////////
                 }
             }
 
@@ -1503,14 +1666,66 @@ LRESULT CALLBACK MasterWndProc(
 
                 WipeText(entryPassword);
             }
+            // 4. Delete the master password.
+            else if (g_masterMode == MasterMode::DeleteMaster)
+            {
+                success = RemoveMasterPassword(password, cleanupOk);
 
+                if (success)
+                {
+                    // 암호화 모드 해제.
+                    g_masterEnabled = false;
+                    g_storageReady = true;
+
+                    // 기존 버튼 이름으로 복귀.
+                    SetWindowTextW(
+                        GetDlgItem(owner, ID_PM_MASTER),
+                        L"마스터 암호 설정"
+                    );
+
+                    // 마스터 암호 삭제 버튼 숨기기 및 비활성화.
+                    ShowWindow(
+                        GetDlgItem(owner, ID_PM_MASTER_DELETE),
+                        SW_HIDE
+                    );
+
+                    EnableWindow(
+                        GetDlgItem(owner, ID_PM_MASTER_DELETE),
+                        FALSE
+                    );
+
+                    // 상태 표시 문구 변경.
+                    SetWindowTextW(
+                        g_statusLabel,
+                        L"Demo - Registry HEX storage. Not encrypted."
+                    );
+
+                    RefreshListBox();
+
+                    SetWindowTextW(g_nameEdit, L"");
+                    SetWindowTextW(g_passwordEdit, L"");
+                }
+                }
             // Clear temporary master password buffers.
             WipeText(password);
             WipeText(confirm);
 
             SetWindowTextW(g_masterInput, L"");
             SetWindowTextW(g_masterConfirm, L"");
-
+            // 마스터 암호 삭제 과정에서 레지스트리 정리에 실패한 경우.
+            if (g_masterMode == MasterMode::DeleteMaster && !cleanupOk)
+            {
+                MessageBoxW(
+                    hWnd,
+                    success
+                    ? L"평문 모드로 전환했지만 기존 암호화 데이터의\n"
+                    L"정리를 완료하지 못했습니다."
+                    : L"마스터 암호 삭제에 실패했으며 복원 과정에서\n"
+                    L"저장한 일부 평문을 제거하지 못했을 수 있습니다.",
+                    L"Warning",
+                    MB_OK | MB_ICONWARNING
+                );
+            }   
             if (!success)
             {
                 MessageBoxW(

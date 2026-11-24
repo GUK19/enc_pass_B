@@ -616,3 +616,78 @@ bool AddEncryptedPassword(const std::wstring& master,
     WipeKey(key);
     return ok;
 }
+
+
+
+// 평문 저장이 완료된 후 암호화 모드를 해제하고
+// 더 이상 필요하지 않은 암호화 관련 데이터를 삭제합니다.
+bool FinishMasterPasswordRemoval(bool& cleanupOk)
+{
+    cleanupOk = true;
+
+    HKEY reg = nullptr;
+
+    LONG rc = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        REGISTRY_PATH,
+        0,
+        DELETE | KEY_ENUMERATE_SUB_KEYS |
+        KEY_QUERY_VALUE | KEY_SET_VALUE,
+        &reg
+    );
+
+    if (rc != ERROR_SUCCESS)
+        return false;
+
+    // 1. 마스터 암호 설정 상태를 0으로 변경합니다.
+    if (!SaveMasterPasswordEnabled(false))
+    {
+        RegCloseKey(reg);
+        return false;
+    }
+
+    // 평문 데이터와 변경된 설정 상태를 디스크에 반영합니다.
+    // 실패하면 기존 암호화 데이터는 삭제하지 않습니다.
+    if (RegFlushKey(reg) != ERROR_SUCCESS)
+    {
+        cleanupOk = false;
+        RegCloseKey(reg);
+        return true;
+    }
+
+    // 2. 기존 암호화된 비밀번호 저장 공간을 삭제합니다.
+    rc = RegDeleteTreeW(reg, L"EncryptedEntries");
+
+    cleanupOk =
+        rc == ERROR_SUCCESS ||
+        rc == ERROR_FILE_NOT_FOUND ||
+        rc == ERROR_PATH_NOT_FOUND;
+
+    // 3. 암호화 저장소가 제거된 경우 KDF 정보와
+    //    마스터 암호 검증용 데이터를 삭제합니다.
+    if (cleanupOk)
+    {
+        const wchar_t* valuesToDelete[] =
+        {
+            L"KdfVersion",
+            L"KdfSalt",
+            L"KdfIterations",
+            L"MasterCheck"
+        };
+
+        for (const wchar_t* valueName : valuesToDelete)
+        {
+            rc = RegDeleteValueW(reg, valueName);
+
+            if (rc != ERROR_SUCCESS &&
+                rc != ERROR_FILE_NOT_FOUND)
+            {
+                cleanupOk = false;
+            }
+        }
+    }
+
+    RegCloseKey(reg);
+
+    return true;
+}
