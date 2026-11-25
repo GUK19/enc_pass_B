@@ -1958,7 +1958,7 @@ LRESULT CALLBACK RecoveryWndProc(
                 hWnd,
                 L"초기화를 하면 기존에 암호관리자에 저장된 "
                 L"모든 암호 정보 또한 삭제됩니다.\n\n"
-                L"삭제된 정보는 이 프로그램에서 복구할 수 없습니다.\n\n"
+                L"삭제된 정보는 복구할 수 없습니다.\n\n"
                 L"암호관리자를 초기화하시겠습니까?",
                 L"암호관리자 초기화",
                 MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
