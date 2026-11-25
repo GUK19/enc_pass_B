@@ -691,3 +691,145 @@ bool FinishMasterPasswordRemoval(bool& cleanupOk)
 
     return true;
 }
+
+// 암호관리자의 모든 저장 데이터를 삭제하고
+// 마스터 암호가 설정되지 않은 상태로 초기화합니다.
+bool ResetPasswordManagerStorage()
+{
+    bool enabled = false;
+
+    if (!LoadMasterPasswordEnabled(enabled) || !enabled)
+        return false;
+
+    HKEY reg = nullptr;
+
+    LONG rc = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        REGISTRY_PATH,
+        0,
+        DELETE | KEY_ENUMERATE_SUB_KEYS |
+        KEY_QUERY_VALUE | KEY_SET_VALUE,
+        &reg
+    );
+
+    if (rc != ERROR_SUCCESS)
+        return false;
+
+    // 1. EncryptedEntries를 포함한 모든 하위 키 삭제.
+    for (;;)
+    {
+        wchar_t subKeyName[256] = {};
+        DWORD length = 256;
+
+        rc = RegEnumKeyExW(
+            reg,
+            0,
+            subKeyName,
+            &length,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr
+        );
+
+        if (rc == ERROR_NO_MORE_ITEMS)
+            break;
+
+        if (rc != ERROR_SUCCESS)
+        {
+            RegCloseKey(reg);
+            return false;
+        }
+
+        rc = RegDeleteTreeW(reg, subKeyName);
+
+        if (rc != ERROR_SUCCESS)
+        {
+            RegCloseKey(reg);
+            return false;
+        }
+    }
+
+    // 2. 레지스트리 값 이름의 최대 길이 확인.
+    DWORD maxValueNameLength = 0;
+
+    rc = RegQueryInfoKeyW(
+        reg,
+        nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr,
+        nullptr,
+        &maxValueNameLength,
+        nullptr, nullptr, nullptr
+    );
+
+    if (rc != ERROR_SUCCESS)
+    {
+        RegCloseKey(reg);
+        return false;
+    }
+
+    std::vector<wchar_t> valueName(
+        static_cast<size_t>(maxValueNameLength) + 1
+    );
+
+    // 3. MasterPasswordEnabled를 제외한 모든 값 삭제.
+    DWORD index = 0;
+
+    for (;;)
+    {
+        DWORD length =
+            static_cast<DWORD>(valueName.size());
+
+        rc = RegEnumValueW(
+            reg,
+            index,
+            valueName.data(),
+            &length,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr
+        );
+
+        if (rc == ERROR_NO_MORE_ITEMS)
+            break;
+
+        if (rc != ERROR_SUCCESS)
+        {
+            RegCloseKey(reg);
+            return false;
+        }
+
+        // 초기화가 완료되기 전까지 설정 상태를 유지합니다.
+        if (CompareStringOrdinal(
+            valueName.data(), -1,
+            L"MasterPasswordEnabled", -1,
+            TRUE) == CSTR_EQUAL)
+        {
+            ++index;
+            continue;
+        }
+
+        rc = RegDeleteValueW(
+            reg,
+            valueName.data()
+        );
+
+        if (rc != ERROR_SUCCESS)
+        {
+            RegCloseKey(reg);
+            return false;
+        }
+    }
+
+    // 4. 삭제 결과를 디스크에 반영합니다.
+    rc = RegFlushKey(reg);
+
+    RegCloseKey(reg);
+
+    if (rc != ERROR_SUCCESS)
+        return false;
+
+    // 5. 모든 삭제가 완료된 후 설정 상태를 0으로 변경.
+    return SaveMasterPasswordEnabled(false);
+}

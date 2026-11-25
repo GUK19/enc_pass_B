@@ -78,6 +78,10 @@ constexpr int ID_MASTER_CONFIRM = 2102;
 constexpr int ID_MASTER_SHOW = 2103;
 constexpr int ID_MASTER_OK = 2104;
 constexpr int ID_MASTER_CANCEL = 2105;
+
+constexpr int ID_MASTER_FORGOT = 2106;
+constexpr int ID_RECOVERY_ONLINE = 2201;
+constexpr int ID_RECOVERY_RESET = 2202;
 //마스터 암호용 추가 끝
 
 // Create a GUI control
@@ -694,6 +698,7 @@ void ShowMasterPasswordWindow(
     HWND parent,
     MasterMode mode
 );
+void ShowMasterRecoveryWindow(HWND parent);
 //마스터 암호용 끝
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -1434,7 +1439,19 @@ LRESULT CALLBACK MasterWndProc(
             350, 265, 80, 30,
             ID_MASTER_CANCEL
         );
-
+        // 암호관리자 잠금 해제 창에서만 표시합니다.
+        if (g_masterMode == MasterMode::Unlock)
+        {
+            CreateControl(
+                hWnd,
+                L"BUTTON",
+                L"마스터 암호를 잊어버렸습니다",
+                WS_TABSTOP | BS_PUSHBUTTON,
+                0,
+                20, 265, 235, 30,
+                ID_MASTER_FORGOT
+            );
+        }
         if (g_masterMode != MasterMode::Setup)
         {
             ShowWindow(confirmLabel, SW_HIDE);
@@ -1761,7 +1778,19 @@ LRESULT CALLBACK MasterWndProc(
 
             return 0;
         }
+        // 마스터 암호 분실 안내 창 열기.
+        case ID_MASTER_FORGOT:
+        {
+            if (notification == BN_CLICKED &&
+                g_masterMode == MasterMode::Unlock &&
+                g_masterEnabled &&
+                !g_storageReady)
+            {
+                ShowMasterRecoveryWindow(hWnd);
+            }
 
+            return 0;
+        }
         // Cancel
         case ID_MASTER_CANCEL:
         {
@@ -1811,4 +1840,343 @@ LRESULT CALLBACK MasterWndProc(
     return DefWindowProcW(
         hWnd, message, wParam, lParam
     );
+}
+// 마스터 암호 복구 안내 창의 메시지 처리기.
+LRESULT CALLBACK RecoveryWndProc(
+    HWND hWnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        // 왼쪽 안내 문구.
+        CreateControl(
+            hWnd,
+            L"STATIC",
+            L"마스터 암호를 등록하셨나요?",
+            SS_CENTER,
+            0,
+            20, 35, 270, 25,
+            0
+        );
+
+        // 왼쪽 버튼.
+        CreateControl(
+            hWnd,
+            L"BUTTON",
+            L"온라인에서 확인해 보세요",
+            WS_TABSTOP | BS_PUSHBUTTON,
+            0,
+            55, 90, 200, 36,
+            ID_RECOVERY_ONLINE
+        );
+
+        // 가운데 세로 구분선.
+        CreateControl(
+            hWnd,
+            L"STATIC",
+            L"",
+            SS_ETCHEDVERT,
+            0,
+            300, 20, 2, 140,
+            0
+        );
+
+        // 오른쪽 안내 문구.
+        CreateControl(
+            hWnd,
+            L"STATIC",
+            L"암호관리자를 새로 시작하시겠어요?",
+            SS_CENTER,
+            0,
+            310, 35, 270, 25,
+            0
+        );
+
+        // 오른쪽 버튼.
+        CreateControl(
+            hWnd,
+            L"BUTTON",
+            L"암호관리자 초기화하기",
+            WS_TABSTOP | BS_PUSHBUTTON,
+            0,
+            345, 90, 200, 36,
+            ID_RECOVERY_RESET
+        );
+
+        return 0;
+    }
+
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+        int notification = HIWORD(wParam);
+
+        if (notification != BN_CLICKED)
+            return 0;
+
+        switch (id)
+        {
+            // 1. 온라인 마스터 암호 확인.
+        case ID_RECOVERY_ONLINE:
+        {
+            MessageBoxW(
+                hWnd,
+                L"추후 업데이트 예정",
+                L"안내",
+                MB_OK | MB_ICONINFORMATION
+            );
+
+            return 0;
+        }
+
+        // 2. 암호관리자 초기화.
+        case ID_RECOVERY_RESET:
+        {
+            HWND unlockWindow =
+                GetWindow(hWnd, GW_OWNER);
+
+            if (!unlockWindow)
+                return 0;
+
+            HWND mainWindow =
+                GetWindow(unlockWindow, GW_OWNER);
+
+            if (!mainWindow ||
+                g_masterMode != MasterMode::Unlock ||
+                !g_masterEnabled ||
+                g_storageReady)
+            {
+                return 0;
+            }
+
+            // 초기화 진행 전 사용자 동의 확인.
+            int answer = MessageBoxW(
+                hWnd,
+                L"초기화를 하면 기존에 암호관리자에 저장된 "
+                L"모든 암호 정보 또한 삭제됩니다.\n\n"
+                L"삭제된 정보는 이 프로그램에서 복구할 수 없습니다.\n\n"
+                L"암호관리자를 초기화하시겠습니까?",
+                L"암호관리자 초기화",
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+            );
+
+            if (answer != IDYES)
+                return 0;
+
+            // 레지스트리 초기화.
+            if (!ResetPasswordManagerStorage())
+            {
+                MessageBoxW(
+                    hWnd,
+                    L"암호관리자 초기화를 완료하지 못했습니다.\n"
+                    L"일부 데이터가 이미 삭제되었을 수 있습니다.\n"
+                    L"초기화를 다시 시도해 주세요.",
+                    L"Error",
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            // 메모리에 있는 비밀번호 초기화.
+            for (auto& entry : g_entries)
+            {
+                WipeText(entry.password);
+            }
+
+            g_entries.clear();
+            g_nextId = 1;
+
+            // 암호관리자 상태 초기화.
+            g_masterEnabled = false;
+            g_storageReady = true;
+
+            // 마스터 암호 설정 버튼 이름 복원.
+            SetWindowTextW(
+                GetDlgItem(mainWindow, ID_PM_MASTER),
+                L"마스터 암호 설정"
+            );
+
+            EnableWindow(
+                GetDlgItem(mainWindow, ID_PM_MASTER),
+                TRUE
+            );
+
+            // 마스터 암호 삭제 버튼 숨기기.
+            ShowWindow(
+                GetDlgItem(mainWindow, ID_PM_MASTER_DELETE),
+                SW_HIDE
+            );
+
+            EnableWindow(
+                GetDlgItem(mainWindow, ID_PM_MASTER_DELETE),
+                FALSE
+            );
+
+            // 암호화 상태 표시 문구 복원.
+            SetWindowTextW(
+                g_statusLabel,
+                L"Demo - Registry HEX storage. Not encrypted."
+            );
+
+            // 비밀번호 목록 및 입력란 초기화.
+            RefreshListBox();
+
+            SetWindowTextW(g_nameEdit, L"");
+            SetWindowTextW(g_passwordEdit, L"");
+
+            // 기본 기능 다시 활성화.
+            EnableWindow(
+                GetDlgItem(mainWindow, ID_PM_ADD),
+                TRUE
+            );
+
+            EnableWindow(
+                GetDlgItem(mainWindow, ID_PM_LOAD),
+                TRUE
+            );
+
+            EnableWindow(
+                GetDlgItem(mainWindow, ID_PM_DELETE),
+                TRUE
+            );
+
+            // 기존 마스터 암호 입력란 초기화.
+            SetWindowTextW(g_masterInput, L"");
+            SetWindowTextW(g_masterConfirm, L"");
+
+            MessageBoxW(
+                hWnd,
+                L"암호관리자 초기화가 완료되었습니다.",
+                L"안내",
+                MB_OK | MB_ICONINFORMATION
+            );
+
+            // 복구 안내 창부터 닫습니다.
+            DestroyWindow(hWnd);
+
+            // 기존 잠금 해제 창도 닫습니다.
+            DestroyWindow(unlockWindow);
+
+            return 0;
+        }
+        }
+
+        break;
+    }
+
+    case WM_CLOSE:
+    {
+        DestroyWindow(hWnd);
+        return 0;
+    }
+
+    case WM_DESTROY:
+    {
+        HWND owner = GetWindow(hWnd, GW_OWNER);
+
+        // 기존 잠금 해제 창을 다시 활성화합니다.
+        if (owner)
+        {
+            EnableWindow(owner, TRUE);
+            SetForegroundWindow(owner);
+            SetActiveWindow(owner);
+        }
+
+        return 0;
+    }
+    }
+
+    return DefWindowProcW(
+        hWnd, message, wParam, lParam
+    );
+}
+// 마스터 암호 복구 안내 창 생성 및 표시.
+void ShowMasterRecoveryWindow(HWND parent)
+{
+    const wchar_t CLASS_NAME[] =
+        L"MasterRecoveryWindowClass";
+
+    static bool registered = false;
+
+    // 새로운 창 클래스 등록.
+    if (!registered)
+    {
+        WNDCLASSW wc = {};
+
+        wc.lpfnWndProc = RecoveryWndProc;
+        wc.hInstance = hInst;
+        wc.lpszClassName = CLASS_NAME;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground =
+            reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+
+        if (!RegisterClassW(&wc))
+        {
+            MessageBoxW(
+                parent,
+                L"복구 안내 창 클래스를 등록하지 못했습니다.",
+                L"Error",
+                MB_OK | MB_ICONERROR
+            );
+
+            return;
+        }
+
+        registered = true;
+    }
+
+    // 기존 잠금 해제 창의 위치 확인.
+    RECT parentRect = {};
+
+    if (!GetWindowRect(parent, &parentRect))
+        return;
+
+    int width = 620;
+    int height = 240;
+
+    // 기존 잠금 해제 창의 중앙에 배치.
+    int x = parentRect.left +
+        ((parentRect.right - parentRect.left) - width) / 2;
+
+    int y = parentRect.top +
+        ((parentRect.bottom - parentRect.top) - height) / 2;
+
+    HWND window = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        CLASS_NAME,
+        L"마스터 암호 복구 안내",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        x, y,
+        width, height,
+        parent,
+        nullptr,
+        hInst,
+        nullptr
+    );
+
+    if (!window)
+    {
+        MessageBoxW(
+            parent,
+            L"마스터 암호 복구 안내 창을 생성하지 못했습니다.",
+            L"Error",
+            MB_OK | MB_ICONERROR
+        );
+
+        return;
+    }
+
+    // 복구 안내 창을 닫기 전까지
+    // 기존 잠금 해제 창을 비활성화합니다.
+    EnableWindow(parent, FALSE);
+
+    ShowWindow(window, SW_SHOW);
+    UpdateWindow(window);
+
+    SetForegroundWindow(window);
 }

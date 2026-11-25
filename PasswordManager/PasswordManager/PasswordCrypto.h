@@ -50,3 +50,6 @@ bool DeleteLegacyPlaintextEntries(const std::vector<PasswordEntry>& entries);
 
 // 마스터 암호 삭제 완료 및 암호화 관련 레지스트리 정리.
 bool FinishMasterPasswordRemoval(bool& cleanupOk);
+
+// 암호관리자의 모든 레지스트리 데이터 초기화.
+bool ResetPasswordManagerStorage();
