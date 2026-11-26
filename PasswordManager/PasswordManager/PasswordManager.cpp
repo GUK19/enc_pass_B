@@ -35,7 +35,8 @@ enum class MasterMode {
     Setup,
     Unlock,
     EncryptAdd,
-    DeleteMaster
+    DeleteMaster,
+    ChangeMaster
 };
 
 MasterMode g_masterMode = MasterMode::Setup;
@@ -80,6 +81,8 @@ constexpr int ID_MASTER_OK = 2104;
 constexpr int ID_MASTER_CANCEL = 2105;
 
 constexpr int ID_MASTER_FORGOT = 2106;
+constexpr int ID_MASTER_NEW = 2107;
+
 constexpr int ID_RECOVERY_ONLINE = 2201;
 constexpr int ID_RECOVERY_RESET = 2202;
 //마스터 암호용 추가 끝
@@ -986,12 +989,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
             if (g_masterEnabled)
             {
-                MessageBoxW(
+                ShowMasterPasswordWindow(
                     hWnd,
-                    L"현재 버전은 마스터 암호 변경 기능을 지원하지 않습니다.\n"
-                    L"기존 암호화 데이터를 보호하기 위해 변경을 진행하지 않습니다.",
-                    L"안내",
-                    MB_OK | MB_ICONINFORMATION
+                    MasterMode::ChangeMaster
                 );
             }
             else
@@ -1306,7 +1306,8 @@ void ShowMasterPasswordWindow(
     GetWindowRect(parent, &parentRect);
 
     int width = 460;
-    int height = 350;
+    int height = mode == MasterMode::ChangeMaster
+        ? 410 : 350;
 
     int x = parentRect.left +
         ((parentRect.right - parentRect.left) - width) / 2;
@@ -1323,6 +1324,8 @@ void ShowMasterPasswordWindow(
         ? L"암호 관리자 잠금 해제"
         : mode == MasterMode::DeleteMaster
         ? L"마스터 암호 삭제"
+        : mode == MasterMode::ChangeMaster
+        ? L"마스터 암호 변경"
         : L"비밀번호 저장 인증",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         x, y,
@@ -1366,6 +1369,113 @@ LRESULT CALLBACK MasterWndProc(
     {
     case WM_CREATE:
     {
+        // ===== 마스터 암호 변경 창 구성 시작 =====
+        if (g_masterMode == MasterMode::ChangeMaster)
+        {
+            CreateControl(
+                hWnd, L"STATIC",
+                L"기존 마스터 암호와 새로운 마스터 암호를 입력하세요.",
+                0, 0, 20, 20, 410, 20, 0
+            );
+
+            CreateControl(
+                hWnd, L"STATIC",
+                L"새로운 마스터 암호는 8자 이상이어야 합니다.",
+                0, 0, 20, 42, 410, 20, 0
+            );
+
+            CreateControl(
+                hWnd, L"STATIC", L"",
+                SS_ETCHEDHORZ,
+                0,
+                20, 70, 410, 2,
+                0
+            );
+
+            // 1. 기존 마스터 암호 입력.
+            CreateControl(
+                hWnd, L"STATIC",
+                L"기존 마스터 암호 입력",
+                0, 0, 20, 88, 410, 20, 0
+            );
+
+            g_masterInput = CreateControl(
+                hWnd, L"EDIT", L"",
+                WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL,
+                WS_EX_CLIENTEDGE,
+                20, 110, 410, 28,
+                ID_MASTER_INPUT
+            );
+
+            // 2. 새로운 마스터 암호 입력.
+            CreateControl(
+                hWnd, L"STATIC",
+                L"새로운 마스터 암호 입력",
+                0, 0, 20, 145, 410, 20, 0
+            );
+
+            HWND newInput = CreateControl(
+                hWnd, L"EDIT", L"",
+                WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL,
+                WS_EX_CLIENTEDGE,
+                20, 167, 410, 28,
+                ID_MASTER_NEW
+            );
+
+            // 3. 새로운 마스터 암호 확인.
+            CreateControl(
+                hWnd, L"STATIC",
+                L"새로운 마스터 암호 확인",
+                0, 0, 20, 202, 410, 20, 0
+            );
+
+            g_masterConfirm = CreateControl(
+                hWnd, L"EDIT", L"",
+                WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL,
+                WS_EX_CLIENTEDGE,
+                20, 224, 410, 28,
+                ID_MASTER_CONFIRM
+            );
+
+            CreateControl(
+                hWnd, L"BUTTON", L"암호 보이기",
+                WS_TABSTOP | BS_AUTOCHECKBOX,
+                0,
+                20, 267, 150, 25,
+                ID_MASTER_SHOW
+            );
+
+            g_masterOk = CreateControl(
+                hWnd, L"BUTTON", L"확인",
+                WS_TABSTOP | BS_DEFPUSHBUTTON,
+                0,
+                265, 315, 75, 30,
+                ID_MASTER_OK
+            );
+
+            CreateControl(
+                hWnd, L"BUTTON", L"취소",
+                WS_TABSTOP | BS_PUSHBUTTON,
+                0,
+                350, 315, 80, 30,
+                ID_MASTER_CANCEL
+            );
+
+            // 필수 입력란이나 확인 버튼의 생성 실패 확인.
+            if (!g_masterInput ||
+                !newInput ||
+                !g_masterConfirm ||
+                !g_masterOk)
+            {
+                return -1;
+            }
+
+            // 세 입력값이 유효하기 전에는 확인 버튼 비활성화.
+            EnableWindow(g_masterOk, FALSE);
+
+            return 0;
+        }
+        // ===== 마스터 암호 변경 창 구성 끝 =====
         CreateControl(
             hWnd, L"STATIC",
             g_masterMode == MasterMode::Setup
@@ -1474,9 +1584,18 @@ LRESULT CALLBACK MasterWndProc(
             // Validate both input fields
         case ID_MASTER_INPUT:
         case ID_MASTER_CONFIRM:
+        case ID_MASTER_NEW:
         {
             if (notification == EN_CHANGE)
             {
+                // 마스터 암호 변경 창의 초기 생성 중에는
+                // 모든 입력란이 생성될 때까지 검증하지 않습니다.
+                if (g_masterMode == MasterMode::ChangeMaster &&
+                    !g_masterOk)
+                {
+                    return 0;
+                }
+
                 std::wstring password =
                     ReadControlText(g_masterInput);
 
@@ -1488,6 +1607,22 @@ LRESULT CALLBACK MasterWndProc(
                     ? password.length() >= 8 &&
                     password == confirm
                     : !password.empty();
+
+                // 마스터 암호 변경 모드의 추가 검증.
+                if (g_masterMode == MasterMode::ChangeMaster)
+                {
+                    std::wstring newPassword =
+                        ReadControlText(
+                            GetDlgItem(hWnd, ID_MASTER_NEW)
+                        );
+
+                    valid =
+                        !password.empty() &&
+                        newPassword.length() >= 8 &&
+                        newPassword == confirm;
+
+                    WipeText(newPassword);
+                }
 
                 EnableWindow(
                     g_masterOk,
@@ -1533,6 +1668,23 @@ LRESULT CALLBACK MasterWndProc(
                 InvalidateRect(
                     g_masterConfirm, nullptr, TRUE
                 );
+                // 마스터 암호 변경 창의 새로운 입력란에도 적용.
+                if (g_masterMode == MasterMode::ChangeMaster)
+                {
+                    HWND newInput =
+                        GetDlgItem(hWnd, ID_MASTER_NEW);
+
+                    SendMessageW(
+                        newInput,
+                        EM_SETPASSWORDCHAR,
+                        show ? 0 : L'*',
+                        0
+                    );
+
+                    InvalidateRect(
+                        newInput, nullptr, TRUE
+                    );
+                }
             }
 
             return 0;
@@ -1541,6 +1693,97 @@ LRESULT CALLBACK MasterWndProc(
         // Confirm password
         case ID_MASTER_OK:
         {
+            // ===== 마스터 암호 변경 처리 시작 =====
+            if (g_masterMode == MasterMode::ChangeMaster)
+            {
+                HWND newInput =
+                    GetDlgItem(hWnd, ID_MASTER_NEW);
+
+                std::wstring oldMaster =
+                    ReadControlText(g_masterInput);
+
+                std::wstring newMaster =
+                    ReadControlText(newInput);
+
+                std::wstring newConfirm =
+                    ReadControlText(g_masterConfirm);
+
+                // 1. 입력값 재검증.
+                bool valid =
+                    !oldMaster.empty() &&
+                    newMaster.length() >= 8 &&
+                    newMaster == newConfirm;
+
+                if (!valid)
+                {
+                    WipeText(oldMaster);
+                    WipeText(newMaster);
+                    WipeText(newConfirm);
+
+                    SetWindowTextW(g_masterInput, L"");
+                    SetWindowTextW(newInput, L"");
+                    SetWindowTextW(g_masterConfirm, L"");
+
+                    MessageBoxW(
+                        hWnd,
+                        L"기존 마스터 암호를 입력하고\n"
+                        L"8자 이상의 새로운 마스터 암호를 동일하게 입력하세요.",
+                        L"경고",
+                        MB_OK | MB_ICONWARNING
+                    );
+
+                    SetFocus(g_masterInput);
+
+                    return 0;
+                }
+
+                // 2. 기존 마스터 암호 검증 및 변경 작업.
+                bool changed =
+                    g_masterEnabled &&
+                    g_storageReady &&
+                    ChangeMasterPassword(
+                        oldMaster,
+                        newMaster
+                    );
+
+                // 3. 임시 마스터 암호 제거.
+                WipeText(oldMaster);
+                WipeText(newMaster);
+                WipeText(newConfirm);
+
+                SetWindowTextW(g_masterInput, L"");
+                SetWindowTextW(newInput, L"");
+                SetWindowTextW(g_masterConfirm, L"");
+
+                // 4. 변경 실패.
+                if (!changed)
+                {
+                    MessageBoxW(
+                        hWnd,
+                        L"기존 마스터 암호 확인 또는 변경 작업에 실패했습니다.\n"
+                        L"입력한 암호를 확인하고 다시 시도해 주세요.",
+                        L"Error",
+                        MB_OK | MB_ICONERROR
+                    );
+
+                    SetFocus(g_masterInput);
+
+                    return 0;
+                }
+
+                // 5. 변경 성공.
+                MessageBoxW(
+                    hWnd,
+                    L"마스터 암호가 변경되었습니다.",
+                    L"안내",
+                    MB_OK | MB_ICONINFORMATION
+                );
+
+                DestroyWindow(hWnd);
+
+                return 0;
+            }
+            // ===== 마스터 암호 변경 처리 끝 =====
             std::wstring password =
                 ReadControlText(g_masterInput);
 
@@ -1811,7 +2054,18 @@ LRESULT CALLBACK MasterWndProc(
     case WM_DESTROY:
     {
         HWND owner = GetWindow(hWnd, GW_OWNER);
+        // 마스터 암호 변경 창을 닫을 때 입력란 정리.
+        if (g_masterMode == MasterMode::ChangeMaster)
+        {
+            SetWindowTextW(g_masterInput, L"");
 
+            SetWindowTextW(
+                GetDlgItem(hWnd, ID_MASTER_NEW),
+                L""
+            );
+
+            SetWindowTextW(g_masterConfirm, L"");
+        }
         g_masterWindow = nullptr;
         g_masterInput = nullptr;
         g_masterConfirm = nullptr;

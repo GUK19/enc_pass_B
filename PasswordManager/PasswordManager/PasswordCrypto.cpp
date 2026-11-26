@@ -9,7 +9,10 @@
 #include <cstring>
 #include <bcrypt.h>
 
+#include <ktmw32.h>
+
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "KtmW32.lib")
 
 // Encrypted records live in a separate registry subkey.
 // [암호문 저장 위치] EncryptedEntries는 REGISTRY_PATH의 하위 키이다.
@@ -832,4 +835,223 @@ bool ResetPasswordManagerStorage()
 
     // 5. 모든 삭제가 완료된 후 설정 상태를 0으로 변경.
     return SaveMasterPasswordEnabled(false);
+}
+
+// 기존 마스터 암호를 검증한 후 모든 비밀번호를
+// 새로운 마스터 암호 기반의 키로 다시 암호화합니다.
+//
+// 일반 비밀번호를 평문 상태로 레지스트리에 저장하지 않습니다.
+// 모든 레지스트리 변경 작업은 하나의 트랜잭션으로 처리합니다.
+bool ChangeMasterPassword(
+    const std::wstring& oldMaster,
+    const std::wstring& newMaster)
+{
+    // 1. 마스터 암호 설정 상태 및 새로운 암호 확인.
+    bool enabled = false;
+
+    if (!LoadMasterPasswordEnabled(enabled) ||
+        !enabled ||
+        oldMaster.empty() ||
+        newMaster.length() < 8)
+    {
+        return false;
+    }
+
+    // 2. 기존 마스터 암호 검증 및 전체 비밀번호 복호화.
+    std::vector<PasswordEntry> restored;
+    unsigned int nextId = 1;
+
+    if (!UnlockEncryptedStorage(
+        oldMaster, restored, nextId))
+    {
+        return false;
+    }
+
+    // 3. 새로운 Salt와 AES-256 키를 위한 변수.
+    std::array<BYTE, SALT_BYTES> newSalt{};
+    std::array<BYTE, KEY_BYTES> newKey{};
+
+    HANDLE transaction = INVALID_HANDLE_VALUE;
+
+    HKEY reg = nullptr;
+    HKEY encryptedReg = nullptr;
+
+    bool ok = false;
+
+    do
+    {
+        // 4. 새로운 Salt 및 암호화 키 생성.
+        if (!GetRandomBytes(
+            newSalt.data(), SALT_BYTES) ||
+            !DeriveAesKey(
+                newMaster,
+                newSalt,
+                KDF_ITERATIONS,
+                newKey))
+        {
+            break;
+        }
+
+        // 5. 레지스트리 트랜잭션 생성.
+        transaction = CreateTransaction(
+            nullptr,
+            nullptr,
+            0,
+            0,
+            0,
+            0,
+            nullptr
+        );
+
+        if (transaction == INVALID_HANDLE_VALUE)
+            break;
+
+        // 6. KDF 정보와 MasterCheck가 저장되는 키 열기.
+        if (RegOpenKeyTransactedW(
+            HKEY_CURRENT_USER,
+            REGISTRY_PATH,
+            0,
+            KEY_SET_VALUE,
+            &reg,
+            transaction,
+            nullptr) != ERROR_SUCCESS)
+        {
+            break;
+        }
+
+        // 7. 암호화된 일반 비밀번호 저장 공간 열기.
+        if (RegOpenKeyTransactedW(
+            HKEY_CURRENT_USER,
+            ENCRYPTED_PATH,
+            0,
+            KEY_SET_VALUE,
+            &encryptedReg,
+            transaction,
+            nullptr) != ERROR_SUCCESS)
+        {
+            break;
+        }
+
+        // 8. 모든 일반 비밀번호를 새로운 키로 암호화.
+        bool entriesOk = true;
+
+        for (const auto& entry : restored)
+        {
+            std::wstring valueName =
+                RegistryEntryName(entry);
+
+            std::vector<BYTE> record;
+
+            if (!EncryptText(
+                newKey,
+                valueName,
+                entry.password,
+                record) ||
+                record.size() > 1024 * 1024 ||
+                !WriteBinaryValue(
+                    encryptedReg,
+                    valueName.c_str(),
+                    record))
+            {
+                entriesOk = false;
+                break;
+            }
+        }
+
+        if (!entriesOk)
+            break;
+
+        // 9. 새로운 KDF 설정값 저장.
+        const DWORD version = 1;
+
+        if (RegSetValueExW(
+            reg,
+            L"KdfSalt",
+            0,
+            REG_BINARY,
+            newSalt.data(),
+            SALT_BYTES) != ERROR_SUCCESS)
+        {
+            break;
+        }
+
+        if (RegSetValueExW(
+            reg,
+            L"KdfIterations",
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE*>(
+                &KDF_ITERATIONS),
+            sizeof(KDF_ITERATIONS)) != ERROR_SUCCESS)
+        {
+            break;
+        }
+
+        if (RegSetValueExW(
+            reg,
+            L"KdfVersion",
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE*>(&version),
+            sizeof(version)) != ERROR_SUCCESS)
+        {
+            break;
+        }
+
+        // 10. 새로운 MasterCheck 생성 및 저장.
+        std::vector<BYTE> masterCheck;
+
+        if (!EncryptText(
+            newKey,
+            L"MasterCheck",
+            L"PM-VAULT-V1",
+            masterCheck) ||
+            !WriteBinaryValue(
+                reg,
+                L"MasterCheck",
+                masterCheck))
+        {
+            break;
+        }
+
+        // 모든 트랜잭션 내 작업 성공.
+        ok = true;
+
+    } while (false);
+
+    // 11. 레지스트리 핸들 정리.
+    if (encryptedReg)
+        RegCloseKey(encryptedReg);
+
+    if (reg)
+        RegCloseKey(reg);
+
+    // 12. 모든 변경 사항을 확정하거나 취소.
+    if (transaction != INVALID_HANDLE_VALUE)
+    {
+        if (ok)
+        {
+            ok = CommitTransaction(transaction) != FALSE;
+        }
+
+        if (!ok)
+        {
+            RollbackTransaction(transaction);
+        }
+
+        CloseHandle(transaction);
+    }
+
+    // 13. 새로운 암호화 키 제거.
+    WipeKey(newKey);
+
+    // 14. 임시 복호화 비밀번호 제거.
+    for (auto& entry : restored)
+    {
+        WipeText(entry.password);
+    }
+
+    restored.clear();
+
+    return ok;
 }

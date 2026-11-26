@@ -53,3 +53,8 @@ bool FinishMasterPasswordRemoval(bool& cleanupOk);
 
 // 암호관리자의 모든 레지스트리 데이터 초기화.
 bool ResetPasswordManagerStorage();
+
+// 마스터 암호 변경.
+bool ChangeMasterPassword(
+    const std::wstring& oldMaster,
+    const std::wstring& newMaster);
