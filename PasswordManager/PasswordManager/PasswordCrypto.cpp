@@ -209,8 +209,12 @@ static bool AesGcmTransform(bool encrypt,
     const std::wstring& valueName,
     const std::vector<BYTE>& input,
     const BYTE* nonce, BYTE* tag,
-    std::vector<BYTE>& output)
+    std::vector<BYTE>& output,
+    bool* authenticationRejected = nullptr)
 {
+    if (authenticationRejected)
+        *authenticationRejected = false;
+
     if (input.empty() || input.size() > (std::numeric_limits<ULONG>::max)() ||
         valueName.size() > (std::numeric_limits<ULONG>::max)() / sizeof(wchar_t))
         return false;
@@ -251,6 +255,17 @@ static bool AesGcmTransform(bool encrypt,
                 static_cast<ULONG>(input.size()), &info,
                 nullptr, 0, output.data(), static_cast<ULONG>(output.size()),
                 &written, 0);
+        // ===== AES-GCM 인증 실패 확인 시작 =====
+        constexpr NTSTATUS AUTH_TAG_MISMATCH_STATUS =
+            static_cast<NTSTATUS>(0xC000A002u);
+
+        if (!encrypt &&
+            authenticationRejected &&
+            status == AUTH_TAG_MISMATCH_STATUS)
+        {
+            *authenticationRejected = true;
+        }
+        // ===== AES-GCM 인증 실패 확인 끝 =====
         ok = BCRYPT_SUCCESS(status) && written == input.size();
     } while (false);
 
@@ -300,8 +315,12 @@ static bool EncryptText(const std::array<BYTE, KEY_BYTES>& key,
 
 static bool DecryptText(const std::array<BYTE, KEY_BYTES>& key,
     const std::wstring& valueName, const std::vector<BYTE>& record,
-    std::wstring& plain)
+    std::wstring& plain,
+    bool* authenticationRejected = nullptr)
 {
+    if (authenticationRejected)
+        *authenticationRejected = false;
+
     constexpr size_t HEADER = 4 + NONCE_BYTES + TAG_BYTES;
     if (record.size() <= HEADER || record[0] != 'P' ||
         record[1] != 'M' || record[2] != '0' || record[3] != '1') return false;
@@ -313,7 +332,7 @@ static bool DecryptText(const std::array<BYTE, KEY_BYTES>& key,
     std::vector<BYTE> ciphertext(record.begin() + HEADER, record.end());
     std::vector<BYTE> decoded;
     bool ok = AesGcmTransform(false, key, valueName, ciphertext,
-        nonce, tag.data(), decoded);
+        nonce, tag.data(), decoded, authenticationRejected);
     if (!ok || decoded.empty() || decoded.size() % sizeof(wchar_t) != 0)
     {
         if (!decoded.empty()) SecureZeroMemory(decoded.data(), decoded.size());
@@ -426,8 +445,12 @@ static bool SaveMasterCheck(const std::array<BYTE, KEY_BYTES>& key)
     return ok;
 }
 
-static bool VerifyMasterCheck(const std::array<BYTE, KEY_BYTES>& key)
+static bool VerifyMasterCheck(const std::array<BYTE, KEY_BYTES>& key,
+    bool* masterCheckRejected)
 {
+    if (masterCheckRejected)
+        *masterCheckRejected = false;
+
     HKEY reg = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REGISTRY_PATH, 0,
         KEY_READ, &reg) != ERROR_SUCCESS) return false;
@@ -436,7 +459,8 @@ static bool VerifyMasterCheck(const std::array<BYTE, KEY_BYTES>& key)
     RegCloseKey(reg);
     if (!ok) return false;
     std::wstring check;
-    ok = DecryptText(key, L"MasterCheck", record, check) &&
+    ok = DecryptText(key, L"MasterCheck", record, check,
+        masterCheckRejected) &&
         check == L"PM-VAULT-V1";
     WipeText(check);
     return ok;
@@ -595,27 +619,37 @@ bool DeleteEncryptedEntryFromRegistry(const PasswordEntry& entry)
 
 // Prompt UI and operations use transient keys, wiped after each operation.
 bool UnlockEncryptedStorage(const std::wstring& master,
-    std::vector<PasswordEntry>& entries, unsigned int& nextId)
+    std::vector<PasswordEntry>& entries, unsigned int& nextId,
+    bool* masterCheckRejected)
 {
+    if (masterCheckRejected)
+        *masterCheckRejected = false;
+
     std::array<BYTE, SALT_BYTES> salt{};
     std::array<BYTE, KEY_BYTES> key{};
     DWORD iterations = 0;
     if (!LoadKdfMetadata(salt, iterations)) return false;
     if (!DeriveAesKey(master, salt, iterations, key)) return false;
-    bool ok = VerifyMasterCheck(key) && LoadEncryptedEntries(key, entries, nextId);
+    bool ok = VerifyMasterCheck(key, masterCheckRejected) &&
+        LoadEncryptedEntries(key, entries, nextId);
     WipeKey(key);
     return ok;
 }
 
 bool AddEncryptedPassword(const std::wstring& master,
-    const PasswordEntry& entry)
+    const PasswordEntry& entry,
+    bool* masterCheckRejected)
 {
+    if (masterCheckRejected)
+        *masterCheckRejected = false;
+
     std::array<BYTE, SALT_BYTES> salt{};
     std::array<BYTE, KEY_BYTES> key{};
     DWORD iterations = 0;
     if (!LoadKdfMetadata(salt, iterations) ||
         !DeriveAesKey(master, salt, iterations, key)) return false;
-    bool ok = VerifyMasterCheck(key) && SaveEncryptedEntry(entry, key);
+    bool ok = VerifyMasterCheck(key, masterCheckRejected) &&
+        SaveEncryptedEntry(entry, key);
     WipeKey(key);
     return ok;
 }

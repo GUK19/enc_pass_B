@@ -577,15 +577,18 @@ bool DeleteEntryFromRegistry(const PasswordEntry& entry)
 // 기존 평문 저장 형식으로 되돌립니다.
 bool RemoveMasterPassword(
     const std::wstring& master,
-    bool& cleanupOk)
+    bool& cleanupOk,
+    bool& masterCheckRejected)
 {
     cleanupOk = true;
+    masterCheckRejected = false;
 
     std::vector<PasswordEntry> restored;
     unsigned int nextId = 1;
 
     // 1. 마스터 암호 검증 및 모든 비밀번호 복호화.
-    if (!UnlockEncryptedStorage(master, restored, nextId))
+    if (!UnlockEncryptedStorage(
+        master, restored, nextId, &masterCheckRejected))
         return false;
 
     bool ok = true;
@@ -1813,6 +1816,7 @@ LRESULT CALLBACK MasterWndProc(
             HWND owner = GetWindow(hWnd, GW_OWNER);
             bool success = false;
             bool cleanupOk = true;
+            bool masterCheckRejected = false;
 
             // 1. Master password setup.
             if (g_masterMode == MasterMode::Setup)
@@ -1847,10 +1851,16 @@ LRESULT CALLBACK MasterWndProc(
                 }
             }
 
+            
             // 2. Unlock encrypted storage.
             else if (g_masterMode == MasterMode::Unlock)
             {
-                success = UnlockEncryptedStorage(password, g_entries, g_nextId);
+                success = UnlockEncryptedStorage(
+                    password,
+                    g_entries,
+                    g_nextId,
+                    &masterCheckRejected
+                );
 
                 if (success)
                 {
@@ -1905,7 +1915,11 @@ LRESULT CALLBACK MasterWndProc(
                     };
 
                     success =
-                        AddEncryptedPassword(password, entry);
+                        AddEncryptedPassword(
+                            password,
+                            entry,
+                            &masterCheckRejected
+                        );
 
                     if (success)
                     {
@@ -1929,7 +1943,11 @@ LRESULT CALLBACK MasterWndProc(
             // 4. Delete the master password.
             else if (g_masterMode == MasterMode::DeleteMaster)
             {
-                success = RemoveMasterPassword(password, cleanupOk);
+                success = RemoveMasterPassword(
+                    password,
+                    cleanupOk,
+                    masterCheckRejected
+                );
 
                 if (success)
                 {
@@ -1988,13 +2006,43 @@ LRESULT CALLBACK MasterWndProc(
             }   
             if (!success)
             {
-                MessageBoxW(
-                    hWnd,
-                    L"암호 확인 또는 레지스트리 처리에 실패했습니다.\n"
-                    L"기존 데이터를 보호하기 위해 작업을 중단합니다.",
-                    L"Error",
-                    MB_OK | MB_ICONERROR
-                );
+                // 1. 암호 관리자 잠금 해제 중 마스터 암호 인증 실패.
+                if (masterCheckRejected &&
+                    g_masterMode == MasterMode::Unlock)
+                {
+                    MessageBoxW(
+                        hWnd,
+                        L"마스터 암호가 틀렸습니다.\n"
+                        L"마스터 암호를 확인해 주세요.",
+                        L"경고",
+                        MB_OK | MB_ICONWARNING
+                    );
+                }
+
+                // 2. 비밀번호 저장 또는 마스터 암호 삭제 중 인증 실패.
+                else if (masterCheckRejected &&
+                    (g_masterMode == MasterMode::EncryptAdd ||
+                        g_masterMode == MasterMode::DeleteMaster))
+                {
+                    MessageBoxW(
+                        hWnd,
+                        L"기존 마스터 암호를 제대로 입력해 주세요.",
+                        L"경고",
+                        MB_OK | MB_ICONWARNING
+                    );
+                }
+
+                // 3. 마스터 암호 인증 실패 이외의 기존 오류 처리.
+                else
+                {
+                    MessageBoxW(
+                        hWnd,
+                        L"암호 확인 또는 레지스트리 처리에 실패했습니다.\n"
+                        L"기존 데이터를 보호하기 위해 작업을 중단합니다.",
+                        L"Error",
+                        MB_OK | MB_ICONERROR
+                    );
+                }
 
                 return 0;
             }

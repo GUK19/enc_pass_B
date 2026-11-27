@@ -39,11 +39,13 @@ bool EnableEncryptionForExistingEntries(
 bool UnlockEncryptedStorage(
     const std::wstring& master,
     std::vector<PasswordEntry>& entries,
-    unsigned int& nextId);
+    unsigned int& nextId,
+    bool* masterCheckRejected = nullptr);
 
 bool AddEncryptedPassword(
     const std::wstring& master,
-    const PasswordEntry& entry);
+    const PasswordEntry& entry,
+    bool* masterCheckRejected = nullptr);
 
 bool DeleteEncryptedEntryFromRegistry(const PasswordEntry& entry);
 bool DeleteLegacyPlaintextEntries(const std::vector<PasswordEntry>& entries);
