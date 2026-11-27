@@ -42,6 +42,7 @@ bool UnlockEncryptedStorage(
     unsigned int& nextId,
     bool* masterCheckRejected = nullptr);
 
+
 bool AddEncryptedPassword(
     const std::wstring& master,
     const PasswordEntry& entry,

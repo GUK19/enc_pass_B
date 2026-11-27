@@ -643,6 +643,7 @@ bool AddEncryptedPassword(const std::wstring& master,
     if (masterCheckRejected)
         *masterCheckRejected = false;
 
+
     std::array<BYTE, SALT_BYTES> salt{};
     std::array<BYTE, KEY_BYTES> key{};
     DWORD iterations = 0;

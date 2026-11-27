@@ -1717,6 +1717,7 @@ LRESULT CALLBACK MasterWndProc(
                     newMaster.length() >= 8 &&
                     newMaster == newConfirm;
 
+
                 if (!valid)
                 {
                     WipeText(oldMaster);
