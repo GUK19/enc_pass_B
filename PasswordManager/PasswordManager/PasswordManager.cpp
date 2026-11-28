@@ -249,8 +249,14 @@ std::wstring Hex8(uint32_t value)
 }
 
 
+
 // Save one password entry as a separate REG_SZ value.
-// Save one password entry as a separate REG_SZ value.
+// [마스터 암호 설정 안 했을 때 암호(비밀번호) 저장 함수] 암호(비밀번호)를 레지스트리의 REG_SZ로 저장한다.
+// number = 항목 ID, name = 항목 표시명, password = 암호화되지 않은 암호(일반 비밀번호).
+// 값 이름: "ID_항목명" (valueName)
+// 값 데이터: ID + 이름HEX + 비밀번호HEX + "#" + CRC32 (data)
+// 반환: true = 레지스트리 쓰기 성공, false = 열기/쓰기 실패.
+// 주의: HEX 인코딩은 암호화가 아니므로 값을 읽으면 비밀번호를 복원할 수 있다.
 bool SaveEntryToRegistry(
     unsigned int number,
     const std::wstring& name,
@@ -303,7 +309,7 @@ bool SaveEntryToRegistry(
 
     return status == ERROR_SUCCESS;
 }
-
+////////////////////////////////////////////////////////////////////////////////////////////
 
 
 // Load all password entries from the registry.
@@ -572,6 +578,7 @@ bool DeleteEntryFromRegistry(const PasswordEntry& entry)
 
     return status == ERROR_SUCCESS;
 }
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 // 마스터 암호를 검증하고 암호화된 비밀번호들을
 // 기존 평문 저장 형식으로 되돌립니다.
@@ -669,6 +676,7 @@ bool RemoveMasterPassword(
     return true;
 }
 //////////////////////////////////////////////////////////////////////////////////////////
+// 
 // Refresh the password manager's visible list.
 void RefreshListBox()
 {
@@ -695,6 +703,7 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+
 //마스터 암호용 추가
 LRESULT CALLBACK MasterWndProc(
     HWND, UINT, WPARAM, LPARAM
@@ -704,8 +713,10 @@ void ShowMasterPasswordWindow(
     HWND parent,
     MasterMode mode
 );
+
 void ShowMasterRecoveryWindow(HWND parent);
 //마스터 암호용 끝
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -747,8 +758,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 
 //
+//  
 //  함수: MyRegisterClass()
-//
 //  용도: 창 클래스를 등록합니다.
 //
 ATOM MyRegisterClass(HINSTANCE hInstance)
@@ -773,12 +784,11 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 }
 
 //
+//   
 //   함수: InitInstance(HINSTANCE, int)
-//
 //   용도: 인스턴스 핸들을 저장하고 주 창을 만듭니다.
 //
-//   주석:이 함수를 통해 인스턴스 핸들을 전역 변수에 저장하고
-//        주 프로그램 창을 만든 다음 표시합니다.
+//   이 함수를 통해 인스턴스 핸들을 전역 변수에 저장하고 주 프로그램 창을 만든 다음 표시합니다.
 //
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
@@ -805,7 +815,8 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    return TRUE;
 }
 
-//
+
+// 
 //  함수: WndProc(HWND, UINT, WPARAM, LPARAM)
 //
 //  용도: 주 창의 메시지를 처리합니다.
@@ -813,8 +824,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //  WM_COMMAND  - 애플리케이션 메뉴를 처리합니다.
 //  WM_PAINT    - 주 창을 그립니다.
 //  WM_DESTROY  - 종료 메시지를 게시하고 반환합니다.
-//
-//
+// 
+// [주 창 이벤트 처리] Windows가 전달하는 메시지별(UINT message)로 아래와 같이 동작을 나눈다.
+// WM_CREATE = 화면 구성과 초기 로딩, WM_COMMAND = 버튼/메뉴 처리,
+// WM_PM_UNLOCK = 마스터 암호 입력 요청, WM_DESTROY = 종료 정리.
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -984,7 +997,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         // 메뉴 선택을 구문 분석합니다:
         switch (wmId)
         {
-            // ===== 마스터 암호 설정 버튼 이벤트 시작 =====
+        // ===== 마스터 암호 설정 버튼 이벤트 시작 =====
         case ID_PM_MASTER:
         {
             if (!g_storageReady)
@@ -1034,7 +1047,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             break;
         }
         // ===== 마스터 암호 삭제 버튼 이벤트 끝 =====
-                // Add a password
+        // 
+        // Add a password
         case ID_PM_ADD:
         {
             if (!g_storageReady)

@@ -15,9 +15,8 @@
 #pragma comment(lib, "KtmW32.lib")
 
 // Encrypted records live in a separate registry subkey.
-// [암호문 저장 위치] EncryptedEntries는 REGISTRY_PATH의 하위 키이다.
-// 암호화 모드의 각 비밀번호는 "ID_항목명"에 REG_BINARY로 저장된다.
-// 이 경로에 저장된 항목 데이터가 AES-GCM 암호문이다.
+// [암호문 저장 위치] EncryptedEntries -> REGISTRY_PATH의 하위 키.
+// 마스터 암호를 통해 암호화된 각 암호는 "ID_항목명"에 REG_BINARY로 저장된다.(AES-GCM 암호문)
 
 
 constexpr wchar_t ENCRYPTED_PATH[] =
@@ -27,22 +26,23 @@ L"Software\\enc_pass_B\\PasswordManager\\EncryptedEntries";
 // 암호화된 비밀번호는 REGISTRY_PATH에 직접 저장하지 않고,
 // 그 하위 폴더 EncryptedEntries라는 별도의 공간을 만들어 저장한다.
 //
-// 예를 들어 GitHub라는 이름으로 비밀번호를 등록했다면,
-// EncryptedEntries 안에 "1_GitHub"라는 이름의 레지스트리 값이 생길 수 있다. -> update 필요
-// "1_GitHub"는 항목을 구분하기 위한 이름이고,
-// 그 값의 데이터 부분에는 암호화된 비밀번호가 저장된다.
+// 예를 들어 암호관리자에 GitHub라는 이름(nickname)으로 암호(비밀번호)를 등록했다면,
+// EncryptedEntries 안에 "1_GitHub"라는 이름의 레지스트리 값이 생긴다.
+// "1_GitHub"는 항목을 구분하기 위한 이름이고, 그 값의 데이터 부분에 실제로 암호화된 암호(비밀번호)가 저장된다.
 //
 //
 // 참고로 레지스트리의 REG_BINARY는 데이터를 바이트 단위로 저장하는 형식이다.
 // 이 프로그램은 암호화된 데이터를 REG_BINARY 형식으로 저장한다.
 
 
-// 암호화에 사용할 키, Salt, Nonce, 인증 태그의 길이를 바이트 단위로 정합니다.
-// 32바이트는 256비트이며, AES-256의 키 크기에 해당합니다.
+//////////////////////////////////////////////////////////////////////////////////////////////////
 constexpr ULONG KEY_BYTES = 32;
 constexpr ULONG SALT_BYTES = 16;
 constexpr ULONG NONCE_BYTES = 12;
 constexpr ULONG TAG_BYTES = 16;
+// 암호화에 사용할 키, Salt, Nonce, 인증 태그의 길이를 바이트 단위로 정하는 코드입니다.
+// 32바이트는 256비트이며, AES-256의 키 크기에 해당합니다.
+//////////////////////////////////////////////////////////////////////////////////////////////////
 
 constexpr DWORD KDF_ITERATIONS = 600000; // PBKDF2를 반복할 횟수입니다. 키를 처음 만들 때와 다시 만들 때 모두 사용합니다.
 
